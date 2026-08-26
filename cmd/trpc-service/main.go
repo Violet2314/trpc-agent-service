@@ -22,6 +22,7 @@ import (
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/feishu"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/webui"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecom"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
@@ -145,6 +146,13 @@ func run(ctx context.Context, args []string) error {
 		}
 		if err := channelRegistry.Register(feishuAdapter); err != nil {
 			return fmt.Errorf("register Feishu adapter: %w", err)
+		}
+		wecomAdapter, err := wecom.New(cache, nil, "")
+		if err != nil {
+			return fmt.Errorf("create WeCom adapter: %w", err)
+		}
+		if err := channelRegistry.Register(wecomAdapter); err != nil {
+			return fmt.Errorf("register WeCom adapter: %w", err)
 		}
 		appRouter, err = gateway.NewRouter(
 			cache,
