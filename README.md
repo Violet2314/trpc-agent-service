@@ -217,4 +217,10 @@ HPA 使用 `autoscaling/v2`，按 CPU/内存扩缩到 2–10 副本，集群需�
 ./scripts/demo.sh
 ```
 
-脚本会创建两个租户（Redis+pgvector / MySQL+mem0）、建立独立 WebUI 会话、检查回复隔离、完整推进 Redis→MySQL Session 迁移六个阶段，并验证迁移后对话与租户指标。可通过 `BASE_URL`、`ADMIN_USER`、`ADMIN_PASSWORD` 覆盖默认连接参数。
+Windows PowerShell 无需安装 `jq`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\demo.ps1
+```
+
+脚本会创建两个租户（Redis+pgvector / MySQL+mem0）、建立独立 WebUI 会话、检查回复隔离、完整推进 Redis→MySQL Session 迁移六个阶段，并验证迁移后对话与租户指标。Bash 版可通过 `BASE_URL`、`ADMIN_USER`、`ADMIN_PASSWORD` 覆盖连接参数；PowerShell 版使用 `-BaseUrl`、`-AdminUser`、`-AdminPassword`。

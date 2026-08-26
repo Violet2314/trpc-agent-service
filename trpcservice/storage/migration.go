@@ -451,8 +451,8 @@ func (s *MySQLMigrationStore) Update(ctx context.Context, status MigrationStatus
 func (s *MySQLMigrationStore) ListActive(ctx context.Context) ([]MigrationStatus, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT migration_id, app_id, from_backend,
 		to_backend, phase, detail_json, updated_at FROM migration
-		WHERE phase NOT IN (?, ?) ORDER BY updated_at`,
-		PhaseDone, PhaseRolledBack,
+		WHERE phase <> ? ORDER BY updated_at`,
+		PhaseRolledBack,
 	)
 	if err != nil {
 		return nil, err

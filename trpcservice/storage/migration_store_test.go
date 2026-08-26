@@ -62,7 +62,7 @@ func TestMySQLMigrationStoreRoundTrip(t *testing.T) {
 		string(PhaseDualWrite), `{}`, now,
 	)
 	mock.ExpectQuery("SELECT migration_id, app_id, from_backend").
-		WithArgs(PhaseDone, PhaseRolledBack).
+		WithArgs(PhaseRolledBack).
 		WillReturnRows(activeRows)
 	active, err := store.ListActive(context.Background())
 	if err != nil || len(active) != 1 || active[0].Phase != PhaseDualWrite {

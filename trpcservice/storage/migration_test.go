@@ -104,6 +104,23 @@ func TestSessionMigratorFullFlowAndRollback(t *testing.T) {
 	if err != nil || status.Phase != PhaseDone {
 		t.Fatalf("Status() = %#v, %v", status, err)
 	}
+	if err := target.UpdateSessionState(ctx, keys[0], session.StateMap{
+		"post_cutover": []byte("mysql"),
+	}); err != nil {
+		t.Fatalf("mark target session: %v", err)
+	}
+	factory.ClearSessionRoute(app.ID)
+	if err := migrator.Resume(ctx); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	resumed, err := factory.SessionService(app)
+	if err != nil {
+		t.Fatalf("SessionService(resumed) error = %v", err)
+	}
+	resumedSession, err := resumed.GetSession(ctx, keys[0])
+	if err != nil || string(resumedSession.State["post_cutover"]) != "mysql" {
+		t.Fatalf("resumed route did not read MySQL: %#v, %v", resumedSession, err)
+	}
 
 	rollbackID, err := migrator.Start(ctx, app.ID, "redis", "mysql")
 	if err != nil {
@@ -222,7 +239,7 @@ func (m *memoryMigrationStore) ListActive(context.Context) ([]MigrationStatus, e
 	defer m.mu.Unlock()
 	var result []MigrationStatus
 	for _, status := range m.statuses {
-		if status.Phase != PhaseDone && status.Phase != PhaseRolledBack {
+		if status.Phase != PhaseRolledBack {
 			status.Detail = cloneDetail(status.Detail)
 			result = append(result, status)
 		}
