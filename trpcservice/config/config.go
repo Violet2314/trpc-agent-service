@@ -23,6 +23,10 @@ type Config struct {
 	PGVectorDSN      string        `yaml:"pgvector_dsn"`
 	Mem0BaseURL      string        `yaml:"mem0_base_url"`
 	OTELEndpoint     string        `yaml:"otel_endpoint"`
+	EmbeddingModel   string        `yaml:"embedding_model"`
+	EmbeddingKeyRef  string        `yaml:"embedding_api_key_ref"`
+	EmbeddingBaseURL string        `yaml:"embedding_base_url"`
+	EmbeddingDim     int           `yaml:"embedding_dimensions"`
 	AdminUsername    string        `yaml:"admin_username"`
 	AdminPasswordRef string        `yaml:"admin_password_ref"`
 	Debounce         time.Duration `yaml:"-"`
@@ -39,6 +43,10 @@ type fileConfig struct {
 	PGVectorDSN      string `yaml:"pgvector_dsn"`
 	Mem0BaseURL      string `yaml:"mem0_base_url"`
 	OTELEndpoint     string `yaml:"otel_endpoint"`
+	EmbeddingModel   string `yaml:"embedding_model"`
+	EmbeddingKeyRef  string `yaml:"embedding_api_key_ref"`
+	EmbeddingBaseURL string `yaml:"embedding_base_url"`
+	EmbeddingDim     *int   `yaml:"embedding_dimensions"`
 	AdminUsername    string `yaml:"admin_username"`
 	AdminPasswordRef string `yaml:"admin_password_ref"`
 	DebounceMS       *int   `yaml:"debounce_ms"`
@@ -54,6 +62,9 @@ func Default() Config {
 	return Config{
 		ListenAddr:       ":8080",
 		RedisAddr:        "127.0.0.1:6379",
+		EmbeddingModel:   "text-embedding-3-small",
+		EmbeddingKeyRef:  "env:TRPC_SERVICE_EMBEDDING_API_KEY",
+		EmbeddingDim:     1536,
 		AdminUsername:    "admin",
 		AdminPasswordRef: "env:TRPC_SERVICE_ADMIN_PASSWORD",
 		Debounce:         1500 * time.Millisecond,
@@ -90,6 +101,12 @@ func Load(path string) (Config, error) {
 	if cfg.AdminPasswordRef != "" && !strings.HasPrefix(cfg.AdminPasswordRef, "env:") {
 		return Config{}, errors.New("admin_password_ref must use env: prefix")
 	}
+	if cfg.EmbeddingDim <= 0 {
+		return Config{}, errors.New("embedding_dimensions must be positive")
+	}
+	if cfg.EmbeddingKeyRef != "" && !strings.HasPrefix(cfg.EmbeddingKeyRef, "env:") {
+		return Config{}, errors.New("embedding_api_key_ref must use env: prefix")
+	}
 	return cfg, nil
 }
 
@@ -100,6 +117,12 @@ func applyFile(cfg *Config, raw fileConfig) error {
 	setIfNotEmpty(&cfg.PGVectorDSN, raw.PGVectorDSN)
 	setIfNotEmpty(&cfg.Mem0BaseURL, raw.Mem0BaseURL)
 	setIfNotEmpty(&cfg.OTELEndpoint, raw.OTELEndpoint)
+	setIfNotEmpty(&cfg.EmbeddingModel, raw.EmbeddingModel)
+	setIfNotEmpty(&cfg.EmbeddingKeyRef, raw.EmbeddingKeyRef)
+	setIfNotEmpty(&cfg.EmbeddingBaseURL, raw.EmbeddingBaseURL)
+	if raw.EmbeddingDim != nil {
+		cfg.EmbeddingDim = *raw.EmbeddingDim
+	}
 	setIfNotEmpty(&cfg.AdminUsername, raw.AdminUsername)
 	setIfNotEmpty(&cfg.AdminPasswordRef, raw.AdminPasswordRef)
 	if raw.DebounceMS != nil {
@@ -135,6 +158,9 @@ func applyEnvironment(cfg *Config) error {
 		{"PGVECTOR_DSN", &cfg.PGVectorDSN},
 		{"MEM0_BASE_URL", &cfg.Mem0BaseURL},
 		{"OTEL_ENDPOINT", &cfg.OTELEndpoint},
+		{"EMBEDDING_MODEL", &cfg.EmbeddingModel},
+		{"EMBEDDING_API_KEY_REF", &cfg.EmbeddingKeyRef},
+		{"EMBEDDING_BASE_URL", &cfg.EmbeddingBaseURL},
 		{"ADMIN_USERNAME", &cfg.AdminUsername},
 		{"ADMIN_PASSWORD_REF", &cfg.AdminPasswordRef},
 	}
@@ -150,6 +176,13 @@ func applyEnvironment(cfg *Config) error {
 			return fmt.Errorf("%sDEBOUNCE_MS must be a non-negative integer", envPrefix)
 		}
 		cfg.Debounce = time.Duration(ms) * time.Millisecond
+	}
+	if value, ok := os.LookupEnv(envPrefix + "EMBEDDING_DIMENSIONS"); ok {
+		dimension, err := strconv.Atoi(value)
+		if err != nil || dimension <= 0 {
+			return fmt.Errorf("%sEMBEDDING_DIMENSIONS must be a positive integer", envPrefix)
+		}
+		cfg.EmbeddingDim = dimension
 	}
 
 	durationOverrides := []struct {

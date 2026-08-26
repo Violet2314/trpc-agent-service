@@ -13,6 +13,11 @@ type HTTPOptions struct {
 // NewHTTPHandler creates the node HTTP handler. Feature-specific routes are
 // registered here as their implementation tasks are completed.
 func NewHTTPHandler(options ...HTTPOptions) http.Handler {
+	return NewHTTPMux(options...)
+}
+
+// NewHTTPMux creates an extensible root mux for channel adapters.
+func NewHTTPMux(options ...HTTPOptions) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", getOnly(statusHandler("ok")))
 	mux.HandleFunc("/readyz", getOnly(statusHandler("ready")))

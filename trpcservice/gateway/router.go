@@ -145,17 +145,17 @@ func (r *Router) Handle(ctx context.Context, message InboundMessage) (Result, er
 		return Result{Outcome: OutcomeDropped, DropReason: DropNotAddressedInGroup}, nil
 	}
 
+	sessionID := DeriveSessionID(snapshot.Tenant.ID, message.Channel, message)
 	dedupKey := BuildDedupKey(snapshot.Tenant.ID, snapshot.Binding.ID, message.MsgID)
 	token, err := r.dedup.Claim(ctx, dedupKey)
 	if err != nil {
 		if errors.Is(err, ErrDuplicate) {
-			r.writeAudit(ctx, snapshot, message, "", string(DropDuplicate), "", time.Since(started))
-			return Result{Outcome: OutcomeDropped, DropReason: DropDuplicate}, nil
+			r.writeAudit(ctx, snapshot, message, sessionID, string(DropDuplicate), "", time.Since(started))
+			return Result{Outcome: OutcomeDropped, DropReason: DropDuplicate, SessionID: sessionID}, nil
 		}
 		return Result{}, fmt.Errorf("claim inbound message: %w", err)
 	}
 
-	sessionID := DeriveSessionID(snapshot.Tenant.ID, message.Channel, message)
 	userEvent := storage.UserEvent{
 		SessionID: sessionID,
 		TenantID:  snapshot.Tenant.ID,

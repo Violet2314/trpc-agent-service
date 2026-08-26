@@ -9,14 +9,25 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"
+	embedderopenai "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+
 	"github.com/liuzengh/trpc-agent-service/trpcservice"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/admin"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/webui"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	platformtool "github.com/liuzengh/trpc-agent-service/trpcservice/tool"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/web"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
 )
 
 func main() {
@@ -41,7 +52,11 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("load node configuration: %w", err)
 	}
 
-	var adminHandler http.Handler
+	var (
+		adminHandler    http.Handler
+		channelRegistry *channels.Registry
+		appRouter       *gateway.Router
+	)
 	if cfg.MySQLDSN != "" {
 		configStore, err := tenant.OpenMySQLStore(ctx, cfg.MySQLDSN)
 		if err != nil {
@@ -63,13 +78,90 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create Admin API: %w", err)
 		}
+
+		redisOptions, err := parseRedisOptions(cfg.RedisAddr)
+		if err != nil {
+			return err
+		}
+		redisClient := redis.NewClient(redisOptions)
+		defer redisClient.Close()
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("ping Redis: %w", err)
+		}
+		deduper, err := gateway.NewRedisDeduper(
+			redisClient, cfg.DedupInflightTTL, cfg.DedupDoneTTL,
+		)
+		if err != nil {
+			return fmt.Errorf("create message deduper: %w", err)
+		}
+		sessionLock, err := gateway.NewRedisSessionLock(
+			redisClient,
+			gateway.RedisSessionLockConfig{TTL: cfg.LockTTL},
+		)
+		if err != nil {
+			return fmt.Errorf("create session lock: %w", err)
+		}
+		eventStore, err := storage.NewMySQLEventStore(configStore.DB())
+		if err != nil {
+			return fmt.Errorf("create event store: %w", err)
+		}
+		pgvectorEmbedder, err := buildEmbedder(cfg)
+		if err != nil {
+			return err
+		}
+		backends := storage.NewBackendFactory(storage.FactoryConfig{
+			RedisURL:    cfg.RedisAddr,
+			MySQLDSN:    cfg.MySQLDSN,
+			PGVectorDSN: cfg.PGVectorDSN,
+			Mem0BaseURL: cfg.Mem0BaseURL,
+		}, pgvectorEmbedder)
+		defer backends.Close()
+		quotaCounter, err := worker.NewRedisQuotaCounter(redisClient)
+		if err != nil {
+			return fmt.Errorf("create quota counter: %w", err)
+		}
+		executor, err := worker.NewExecutor(
+			backends,
+			worker.OpenAIModelFactory{},
+			platformtool.NewRegistry(),
+			worker.NewPolicyGovernor(quotaCounter),
+			worker.NewPolicyRedactor(),
+		)
+		if err != nil {
+			return fmt.Errorf("create Worker executor: %w", err)
+		}
+		channelRegistry = channels.NewRegistry()
+		webAdapter, err := webui.New(webui.NewHub(), web.Handler())
+		if err != nil {
+			return fmt.Errorf("create WebUI adapter: %w", err)
+		}
+		if err := channelRegistry.Register(webAdapter); err != nil {
+			return fmt.Errorf("register WebUI adapter: %w", err)
+		}
+		appRouter, err = gateway.NewRouter(
+			cache,
+			deduper,
+			sessionLock,
+			gateway.NewDebouncer(cfg.Debounce),
+			eventStore,
+			executor,
+			channelRegistry,
+			nil,
+		)
+		if err != nil {
+			return fmt.Errorf("create Agent Gateway: %w", err)
+		}
 	}
 
+	mux := trpcservice.NewHTTPMux(trpcservice.HTTPOptions{AdminHandler: adminHandler})
+	if channelRegistry != nil {
+		if err := channelRegistry.Run(ctx, mux, appRouter.Handle); err != nil {
+			return fmt.Errorf("start channel adapters: %w", err)
+		}
+	}
 	server := &http.Server{
-		Addr: cfg.ListenAddr,
-		Handler: trpcservice.NewHTTPHandler(trpcservice.HTTPOptions{
-			AdminHandler: adminHandler,
-		}),
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -93,8 +185,45 @@ func run(ctx context.Context, args []string) error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful HTTP shutdown: %w", err)
 	}
+	if appRouter != nil {
+		appRouter.Drain()
+	}
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP during shutdown: %w", err)
 	}
 	return nil
+}
+
+func parseRedisOptions(address string) (*redis.Options, error) {
+	if strings.Contains(address, "://") {
+		options, err := redis.ParseURL(address)
+		if err != nil {
+			return nil, fmt.Errorf("parse Redis URL: %w", err)
+		}
+		return options, nil
+	}
+	if strings.TrimSpace(address) == "" {
+		return nil, errors.New("Redis address is required")
+	}
+	return &redis.Options{Addr: address}, nil
+}
+
+func buildEmbedder(cfg config.Config) (embedder.Embedder, error) {
+	if cfg.PGVectorDSN == "" {
+		return nil, nil
+	}
+	apiKey, err := tenant.ResolveSecret(cfg.EmbeddingKeyRef)
+	if err != nil {
+		return nil, fmt.Errorf("resolve embedding API key: %w", err)
+	}
+	options := []embedderopenai.Option{
+		embedderopenai.WithModel(cfg.EmbeddingModel),
+		embedderopenai.WithAPIKey(apiKey),
+		embedderopenai.WithDimensions(cfg.EmbeddingDim),
+		embedderopenai.WithMaxRetries(1),
+	}
+	if cfg.EmbeddingBaseURL != "" {
+		options = append(options, embedderopenai.WithBaseURL(cfg.EmbeddingBaseURL))
+	}
+	return embedderopenai.New(options...), nil
 }

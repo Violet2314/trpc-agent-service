@@ -59,7 +59,10 @@ func TestRouterHandleOutcomes(t *testing.T) {
 			name:     "Redis duplicate",
 			message:  validInbound(),
 			claimErr: ErrDuplicate,
-			want:     Result{Outcome: OutcomeDropped, DropReason: DropDuplicate},
+			want: Result{
+				Outcome: OutcomeDropped, DropReason: DropDuplicate,
+				SessionID: "tenant-a:webui:user-1",
+			},
 		},
 		{
 			name:       "database duplicate",

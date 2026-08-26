@@ -41,9 +41,9 @@ const (
 
 // Result is returned to adapters so they can ACK without waiting for execution.
 type Result struct {
-	Outcome    Outcome
-	DropReason DropReason
-	SessionID  string
+	Outcome    Outcome    `json:"outcome"`
+	DropReason DropReason `json:"drop_reason,omitempty"`
+	SessionID  string     `json:"session_id,omitempty"`
 }
 
 // DeriveSessionID deterministically isolates tenant/channel conversations.
