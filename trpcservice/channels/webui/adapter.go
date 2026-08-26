@@ -25,12 +25,12 @@ const (
 
 // Adapter implements WebUI POST ingestion and SSE streaming.
 type Adapter struct {
-	hub    *Hub
+	hub    StreamHub
 	static http.Handler
 }
 
 // New constructs a WebUI adapter.
-func New(hub *Hub, static http.Handler) (*Adapter, error) {
+func New(hub StreamHub, static http.Handler) (*Adapter, error) {
 	if hub == nil {
 		return nil, errors.New("WebUI hub is required")
 	}
@@ -163,7 +163,7 @@ func (a *Adapter) handleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 type replier struct {
-	hub *Hub
+	hub StreamHub
 }
 
 func (r *replier) Reply(

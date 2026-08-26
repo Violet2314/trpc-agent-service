@@ -212,7 +212,11 @@ func run(ctx context.Context, args []string) error {
 		}
 		channelRegistry = channels.NewRegistry()
 		channelRegistry.SetMetrics(telemetryMetrics)
-		webAdapter, err := webui.New(webui.NewHub(), web.Handler())
+		webHub, err := webui.NewRedisHub(redisClient)
+		if err != nil {
+			return fmt.Errorf("create WebUI Redis hub: %w", err)
+		}
+		webAdapter, err := webui.New(webHub, web.Handler())
 		if err != nil {
 			return fmt.Errorf("create WebUI adapter: %w", err)
 		}

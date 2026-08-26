@@ -14,6 +14,13 @@ var (
 
 const maxHistoryEvents = 512
 
+// StreamHub is the cross-request event transport used by WebUI.
+type StreamHub interface {
+	Ensure(sessionID, owner string) error
+	Subscribe(sessionID, owner string) (<-chan worker.Event, func(), error)
+	Publish(sessionID, owner string, event worker.Event) error
+}
+
 type topic struct {
 	owner       string
 	history     []worker.Event
