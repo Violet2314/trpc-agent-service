@@ -27,6 +27,7 @@ type Config struct {
 	EmbeddingKeyRef  string        `yaml:"embedding_api_key_ref"`
 	EmbeddingBaseURL string        `yaml:"embedding_base_url"`
 	EmbeddingDim     int           `yaml:"embedding_dimensions"`
+	ILinkRouteKeys   []string      `yaml:"ilink_route_keys"`
 	AdminUsername    string        `yaml:"admin_username"`
 	AdminPasswordRef string        `yaml:"admin_password_ref"`
 	Debounce         time.Duration `yaml:"-"`
@@ -37,23 +38,24 @@ type Config struct {
 }
 
 type fileConfig struct {
-	ListenAddr       string `yaml:"listen_addr"`
-	RedisAddr        string `yaml:"redis_addr"`
-	MySQLDSN         string `yaml:"mysql_dsn"`
-	PGVectorDSN      string `yaml:"pgvector_dsn"`
-	Mem0BaseURL      string `yaml:"mem0_base_url"`
-	OTELEndpoint     string `yaml:"otel_endpoint"`
-	EmbeddingModel   string `yaml:"embedding_model"`
-	EmbeddingKeyRef  string `yaml:"embedding_api_key_ref"`
-	EmbeddingBaseURL string `yaml:"embedding_base_url"`
-	EmbeddingDim     *int   `yaml:"embedding_dimensions"`
-	AdminUsername    string `yaml:"admin_username"`
-	AdminPasswordRef string `yaml:"admin_password_ref"`
-	DebounceMS       *int   `yaml:"debounce_ms"`
-	ConfigCacheTTL   string `yaml:"config_cache_ttl"`
-	LockTTL          string `yaml:"lock_ttl"`
-	DedupInflightTTL string `yaml:"dedup_inflight_ttl"`
-	DedupDoneTTL     string `yaml:"dedup_done_ttl"`
+	ListenAddr       string   `yaml:"listen_addr"`
+	RedisAddr        string   `yaml:"redis_addr"`
+	MySQLDSN         string   `yaml:"mysql_dsn"`
+	PGVectorDSN      string   `yaml:"pgvector_dsn"`
+	Mem0BaseURL      string   `yaml:"mem0_base_url"`
+	OTELEndpoint     string   `yaml:"otel_endpoint"`
+	EmbeddingModel   string   `yaml:"embedding_model"`
+	EmbeddingKeyRef  string   `yaml:"embedding_api_key_ref"`
+	EmbeddingBaseURL string   `yaml:"embedding_base_url"`
+	EmbeddingDim     *int     `yaml:"embedding_dimensions"`
+	ILinkRouteKeys   []string `yaml:"ilink_route_keys"`
+	AdminUsername    string   `yaml:"admin_username"`
+	AdminPasswordRef string   `yaml:"admin_password_ref"`
+	DebounceMS       *int     `yaml:"debounce_ms"`
+	ConfigCacheTTL   string   `yaml:"config_cache_ttl"`
+	LockTTL          string   `yaml:"lock_ttl"`
+	DedupInflightTTL string   `yaml:"dedup_inflight_ttl"`
+	DedupDoneTTL     string   `yaml:"dedup_done_ttl"`
 }
 
 // Default returns safe development defaults. Backend connection settings may
@@ -123,6 +125,9 @@ func applyFile(cfg *Config, raw fileConfig) error {
 	if raw.EmbeddingDim != nil {
 		cfg.EmbeddingDim = *raw.EmbeddingDim
 	}
+	if raw.ILinkRouteKeys != nil {
+		cfg.ILinkRouteKeys = append([]string(nil), raw.ILinkRouteKeys...)
+	}
 	setIfNotEmpty(&cfg.AdminUsername, raw.AdminUsername)
 	setIfNotEmpty(&cfg.AdminPasswordRef, raw.AdminPasswordRef)
 	if raw.DebounceMS != nil {
@@ -183,6 +188,14 @@ func applyEnvironment(cfg *Config) error {
 			return fmt.Errorf("%sEMBEDDING_DIMENSIONS must be a positive integer", envPrefix)
 		}
 		cfg.EmbeddingDim = dimension
+	}
+	if value, ok := os.LookupEnv(envPrefix + "ILINK_ROUTE_KEYS"); ok {
+		cfg.ILinkRouteKeys = nil
+		for _, routeKey := range strings.Split(value, ",") {
+			if routeKey = strings.TrimSpace(routeKey); routeKey != "" {
+				cfg.ILinkRouteKeys = append(cfg.ILinkRouteKeys, routeKey)
+			}
+		}
 	}
 
 	durationOverrides := []struct {

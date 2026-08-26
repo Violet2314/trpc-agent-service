@@ -22,6 +22,7 @@ import (
 	"github.com/liuzengh/trpc-agent-service/trpcservice/admin"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/feishu"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/ilink"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/webui"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecom"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
@@ -86,6 +87,7 @@ func run(ctx context.Context, args []string) error {
 		adminHandler    http.Handler
 		channelRegistry *channels.Registry
 		appRouter       *gateway.Router
+		ilinkChannel    *ilink.Adapter
 		auditWriter     platformlog.AuditWriter = platformlog.NopAuditWriter{}
 	)
 	if cfg.MySQLDSN != "" {
@@ -231,6 +233,17 @@ func run(ctx context.Context, args []string) error {
 		if err := channelRegistry.Register(wecomAdapter); err != nil {
 			return fmt.Errorf("register WeCom adapter: %w", err)
 		}
+		if len(cfg.ILinkRouteKeys) > 0 {
+			ilinkChannel, err = ilink.New(
+				cache, redisClient, nil, "", cfg.ILinkRouteKeys,
+			)
+			if err != nil {
+				return fmt.Errorf("create iLink adapter: %w", err)
+			}
+			if err := channelRegistry.Register(ilinkChannel); err != nil {
+				return fmt.Errorf("register iLink adapter: %w", err)
+			}
+		}
 		appRouter, err = gateway.NewRouter(
 			cache,
 			deduper,
@@ -251,8 +264,15 @@ func run(ctx context.Context, args []string) error {
 		AdminHandler:   adminHandler,
 		MetricsHandler: telemetryMetrics.Handler(),
 	})
+	channelCtx, cancelChannels := context.WithCancel(ctx)
+	defer func() {
+		cancelChannels()
+		if ilinkChannel != nil {
+			ilinkChannel.Wait()
+		}
+	}()
 	if channelRegistry != nil {
-		if err := channelRegistry.Run(ctx, mux, appRouter.Handle); err != nil {
+		if err := channelRegistry.Run(channelCtx, mux, appRouter.Handle); err != nil {
 			return fmt.Errorf("start channel adapters: %w", err)
 		}
 	}
@@ -281,6 +301,10 @@ func run(ctx context.Context, args []string) error {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful HTTP shutdown: %w", err)
+	}
+	cancelChannels()
+	if ilinkChannel != nil {
+		ilinkChannel.Wait()
 	}
 	if appRouter != nil {
 		appRouter.Drain()

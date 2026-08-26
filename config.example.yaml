@@ -8,6 +8,7 @@ embedding_model: "text-embedding-3-small"
 embedding_api_key_ref: "env:TRPC_SERVICE_EMBEDDING_API_KEY"
 embedding_base_url: ""
 embedding_dimensions: 1536
+ilink_route_keys: []
 admin_username: "admin"
 admin_password_ref: "env:TRPC_SERVICE_ADMIN_PASSWORD"
 debounce_ms: 1500

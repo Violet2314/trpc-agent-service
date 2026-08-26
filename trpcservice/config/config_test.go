@@ -42,6 +42,7 @@ dedup_done_ttl: "12h"
 	}
 	t.Setenv(envPrefix+"LISTEN_ADDR", ":9100")
 	t.Setenv(envPrefix+"DEBOUNCE_MS", "250")
+	t.Setenv(envPrefix+"ILINK_ROUTE_KEYS", "bot-a, bot-b")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -61,6 +62,9 @@ dedup_done_ttl: "12h"
 	}
 	if cfg.DedupInflightTTL != 2*time.Minute {
 		t.Errorf("DedupInflightTTL = %s, want 2m", cfg.DedupInflightTTL)
+	}
+	if len(cfg.ILinkRouteKeys) != 2 || cfg.ILinkRouteKeys[1] != "bot-b" {
+		t.Errorf("ILinkRouteKeys = %v, want bot-a,bot-b", cfg.ILinkRouteKeys)
 	}
 }
 
