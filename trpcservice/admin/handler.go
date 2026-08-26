@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 )
 
@@ -22,6 +23,17 @@ type Handler struct {
 	username string
 	password string
 	mux      *http.ServeMux
+	migrator storage.Migrator
+}
+
+// Option configures optional Admin API capabilities.
+type Option func(*Handler)
+
+// WithMigrator enables migration control routes.
+func WithMigrator(migrator storage.Migrator) Option {
+	return func(handler *Handler) {
+		handler.migrator = migrator
+	}
 }
 
 // NewHandler constructs a Basic Auth protected Admin API.
@@ -30,6 +42,7 @@ func NewHandler(
 	cache tenant.ConfigCache,
 	username string,
 	password string,
+	options ...Option,
 ) (http.Handler, error) {
 	if store == nil {
 		return nil, errors.New("admin config store is required")
@@ -43,6 +56,11 @@ func NewHandler(
 		username: username,
 		password: password,
 		mux:      http.NewServeMux(),
+	}
+	for _, option := range options {
+		if option != nil {
+			option(handler)
+		}
 	}
 	handler.routes()
 	return handler, nil
@@ -62,6 +80,13 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /api/v1/apps/{appID}/bindings", h.upsertBinding)
 	h.mux.HandleFunc("GET /api/v1/apps/{appID}/bindings", h.listBindings)
 	h.mux.HandleFunc("PUT /api/v1/bindings/{bindingID}", h.upsertBinding)
+
+	if h.migrator != nil {
+		h.mux.HandleFunc("POST /api/v1/apps/{appID}/migrations", h.startMigration)
+		h.mux.HandleFunc("POST /api/v1/migrations/{migrationID}/advance", h.advanceMigration)
+		h.mux.HandleFunc("POST /api/v1/migrations/{migrationID}/rollback", h.rollbackMigration)
+		h.mux.HandleFunc("GET /api/v1/migrations/{migrationID}", h.getMigration)
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +232,49 @@ func (h *Handler) listBindings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, values)
+}
+
+func (h *Handler) startMigration(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id, err := h.migrator.Start(r.Context(), r.PathValue("appID"), body.From, body.To)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"migration_id": id})
+}
+
+func (h *Handler) advanceMigration(w http.ResponseWriter, r *http.Request) {
+	phase, err := h.migrator.Advance(r.Context(), r.PathValue("migrationID"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]storage.MigrationPhase{"phase": phase})
+}
+
+func (h *Handler) rollbackMigration(w http.ResponseWriter, r *http.Request) {
+	if err := h.migrator.Rollback(r.Context(), r.PathValue("migrationID")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"rolled_back": true})
+}
+
+func (h *Handler) getMigration(w http.ResponseWriter, r *http.Request) {
+	status, err := h.migrator.Status(r.Context(), r.PathValue("migrationID"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {

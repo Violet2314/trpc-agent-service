@@ -23,9 +23,11 @@ type UserEvent struct {
 	ID        int64
 	SessionID string
 	TenantID  string
+	AppID     string
 	Channel   string
 	MsgID     string
 	SenderID  string
+	UserRef   string
 	Text      string
 	TraceID   string
 	Consumed  bool
@@ -54,9 +56,12 @@ func NewMySQLEventStore(db *sql.DB) (*MySQLEventStore, error) {
 
 // AppendUserEvent persists the durable handoff before an adapter ACKs.
 func (s *MySQLEventStore) AppendUserEvent(ctx context.Context, event UserEvent) error {
-	if event.SessionID == "" || event.TenantID == "" || event.Channel == "" ||
+	if event.SessionID == "" || event.TenantID == "" || event.AppID == "" || event.Channel == "" ||
 		event.MsgID == "" || event.SenderID == "" {
-		return errors.New("user event session, tenant, channel, message, and sender IDs are required")
+		return errors.New("user event session, tenant, app, channel, message, and sender IDs are required")
+	}
+	if event.UserRef == "" {
+		event.UserRef = event.SenderID
 	}
 	payload, err := json.Marshal(userEventPayload{
 		SenderID: event.SenderID,
@@ -65,6 +70,16 @@ func (s *MySQLEventStore) AppendUserEvent(ctx context.Context, event UserEvent) 
 	})
 	if err != nil {
 		return fmt.Errorf("encode user event payload: %w", err)
+	}
+	const ensureSession = `INSERT INTO session
+		(session_id, tenant_id, app_id, channel, user_ref)
+		VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`
+	if _, err := s.db.ExecContext(
+		ctx, ensureSession,
+		event.SessionID, event.TenantID, event.AppID, event.Channel, event.UserRef,
+	); err != nil {
+		return fmt.Errorf("ensure platform session: %w", err)
 	}
 	const query = `INSERT INTO message_event
 		(session_id, tenant_id, role, type, payload_json, msg_id, channel, consumed)

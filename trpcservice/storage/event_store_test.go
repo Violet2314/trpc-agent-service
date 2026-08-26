@@ -22,6 +22,9 @@ func TestMySQLEventStoreAppendAndDuplicate(t *testing.T) {
 	}
 	event := testUserEvent()
 
+	mock.ExpectExec("INSERT INTO session").
+		WithArgs(event.SessionID, event.TenantID, event.AppID, event.Channel, event.SenderID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO message_event").
 		WithArgs(event.SessionID, event.TenantID, sqlmock.AnyArg(), event.MsgID, event.Channel).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -29,6 +32,9 @@ func TestMySQLEventStoreAppendAndDuplicate(t *testing.T) {
 		t.Fatalf("AppendUserEvent() error = %v", err)
 	}
 
+	mock.ExpectExec("INSERT INTO session").
+		WithArgs(event.SessionID, event.TenantID, event.AppID, event.Channel, event.SenderID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO message_event").
 		WithArgs(event.SessionID, event.TenantID, sqlmock.AnyArg(), event.MsgID, event.Channel).
 		WillReturnError(&mysqlDriver.MySQLError{Number: 1062, Message: "duplicate"})
@@ -109,6 +115,7 @@ func testUserEvent() UserEvent {
 	return UserEvent{
 		SessionID: "tenant-a:webui:user-1",
 		TenantID:  "tenant-a",
+		AppID:     "app-a",
 		Channel:   "webui",
 		MsgID:     "msg-1",
 		SenderID:  "user-1",

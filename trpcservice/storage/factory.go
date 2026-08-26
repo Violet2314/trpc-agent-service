@@ -34,6 +34,12 @@ type Factory interface {
 	Close() error
 }
 
+// SessionRoute controls migration-time read and write backends.
+type SessionRoute struct {
+	Reader  string
+	Writers []string
+}
+
 // FactoryConfig contains node-level backend endpoints.
 type FactoryConfig struct {
 	RedisURL    string
@@ -57,6 +63,7 @@ type BackendFactory struct {
 	sessions     map[string]session.Service
 	memories     map[string]MemoryBackend
 	closers      []io.Closer
+	routes       map[string]SessionRoute
 }
 
 // NewBackendFactory constructs a backend factory. pgvectorEmbedder may be nil
@@ -73,6 +80,7 @@ func newBackendFactory(constructors backendConstructors) *BackendFactory {
 		constructors: constructors,
 		sessions:     make(map[string]session.Service),
 		memories:     make(map[string]MemoryBackend),
+		routes:       make(map[string]SessionRoute),
 	}
 }
 
@@ -81,21 +89,56 @@ func (f *BackendFactory) SessionService(app tenant.AgentApp) (session.Service, e
 	if app.ID == "" || app.TenantID == "" {
 		return nil, errors.New("session backend app and tenant IDs are required")
 	}
-	key := backendCacheKey(app, app.Backends.Session)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
 		return nil, errors.New("backend factory is closed")
 	}
+	route, migrating := f.routes[app.ID]
+	if !migrating {
+		return f.sessionServiceLocked(app, app.Backends.Session)
+	}
+	reader, err := f.sessionServiceLocked(app, route.Reader)
+	if err != nil {
+		return nil, err
+	}
+	writers := make([]session.Service, 0, len(route.Writers))
+	for _, backend := range route.Writers {
+		writer, err := f.sessionServiceLocked(app, backend)
+		if err != nil {
+			return nil, err
+		}
+		writers = append(writers, writer)
+	}
+	return newRoutedSessionService(reader, writers...), nil
+}
+
+// SessionServiceFor returns a concrete backend, bypassing migration routing.
+func (f *BackendFactory) SessionServiceFor(
+	app tenant.AgentApp,
+	backend string,
+) (session.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil, errors.New("backend factory is closed")
+	}
+	return f.sessionServiceLocked(app, backend)
+}
+
+func (f *BackendFactory) sessionServiceLocked(
+	app tenant.AgentApp,
+	backend string,
+) (session.Service, error) {
+	key := backendCacheKey(app, backend)
 	if service, ok := f.sessions[key]; ok {
 		return service, nil
 	}
-
 	var (
 		service session.Service
 		err     error
 	)
-	switch app.Backends.Session {
+	switch backend {
 	case "redis":
 		if f.constructors.redisSession == nil {
 			return nil, errors.New("Redis session constructor is unavailable")
@@ -107,17 +150,46 @@ func (f *BackendFactory) SessionService(app tenant.AgentApp) (session.Service, e
 		}
 		service, err = f.constructors.mysqlSession(app)
 	default:
-		return nil, fmt.Errorf("unsupported session backend %q", app.Backends.Session)
+		return nil, fmt.Errorf("unsupported session backend %q", backend)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("create %s session backend: %w", app.Backends.Session, err)
+		return nil, fmt.Errorf("create %s session backend: %w", backend, err)
 	}
 	if service == nil {
-		return nil, fmt.Errorf("%s session constructor returned nil", app.Backends.Session)
+		return nil, fmt.Errorf("%s session constructor returned nil", backend)
 	}
 	f.sessions[key] = service
 	f.closers = append(f.closers, service)
 	return service, nil
+}
+
+// SetSessionRoute atomically changes migration-time routing for an app.
+func (f *BackendFactory) SetSessionRoute(appID string, route SessionRoute) error {
+	if appID == "" || route.Reader == "" || len(route.Writers) == 0 {
+		return errors.New("session route app, reader, and writers are required")
+	}
+	for _, backend := range append([]string{route.Reader}, route.Writers...) {
+		if backend != "redis" && backend != "mysql" {
+			return fmt.Errorf("unsupported routed session backend %q", backend)
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return errors.New("backend factory is closed")
+	}
+	f.routes[appID] = SessionRoute{
+		Reader:  route.Reader,
+		Writers: append([]string(nil), route.Writers...),
+	}
+	return nil
+}
+
+// ClearSessionRoute restores the app's configured backend.
+func (f *BackendFactory) ClearSessionRoute(appID string) {
+	f.mu.Lock()
+	delete(f.routes, appID)
+	f.mu.Unlock()
 }
 
 // MemoryBackend returns one cached memory integration per app version/backend.

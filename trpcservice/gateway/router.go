@@ -190,11 +190,17 @@ func (r *Router) Handle(ctx context.Context, message InboundMessage) (Result, er
 	userEvent := storage.UserEvent{
 		SessionID: sessionID,
 		TenantID:  snapshot.Tenant.ID,
+		AppID:     snapshot.App.ID,
 		Channel:   message.Channel,
 		MsgID:     message.MsgID,
 		SenderID:  message.SenderID,
 		Text:      message.Text,
 		TraceID:   message.TraceID,
+	}
+	if message.ChatType == "group" {
+		userEvent.UserRef = message.GroupID
+	} else {
+		userEvent.UserRef = message.SenderID
 	}
 	if err := r.events.AppendUserEvent(ctx, userEvent); err != nil {
 		if errors.Is(err, storage.ErrDuplicateEvent) {

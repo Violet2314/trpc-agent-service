@@ -111,15 +111,6 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create config cache: %w", err)
 		}
-		password, err := tenant.ResolveSecret(cfg.AdminPasswordRef)
-		if err != nil {
-			return fmt.Errorf("resolve admin password: %w", err)
-		}
-		adminHandler, err = admin.NewHandler(configStore, cache, cfg.AdminUsername, password)
-		if err != nil {
-			return fmt.Errorf("create Admin API: %w", err)
-		}
-
 		redisOptions, err := parseRedisOptions(cfg.RedisAddr)
 		if err != nil {
 			return err
@@ -157,6 +148,41 @@ func run(ctx context.Context, args []string) error {
 			Mem0BaseURL: cfg.Mem0BaseURL,
 		}, pgvectorEmbedder)
 		defer backends.Close()
+		migrationStore, err := storage.NewMySQLMigrationStore(configStore.DB())
+		if err != nil {
+			return fmt.Errorf("create migration store: %w", err)
+		}
+		sessionCatalog, err := storage.NewMySQLSessionCatalog(configStore.DB())
+		if err != nil {
+			return fmt.Errorf("create session catalog: %w", err)
+		}
+		sessionMigrator, err := storage.NewSessionMigrator(
+			migrationStore,
+			configStore,
+			sessionCatalog,
+			migrationLockAdapter{lock: sessionLock},
+			backends,
+		)
+		if err != nil {
+			return fmt.Errorf("create Session migrator: %w", err)
+		}
+		if err := sessionMigrator.Resume(ctx); err != nil {
+			return fmt.Errorf("resume Session migrations: %w", err)
+		}
+		password, err := tenant.ResolveSecret(cfg.AdminPasswordRef)
+		if err != nil {
+			return fmt.Errorf("resolve admin password: %w", err)
+		}
+		adminHandler, err = admin.NewHandler(
+			configStore,
+			cache,
+			cfg.AdminUsername,
+			password,
+			admin.WithMigrator(sessionMigrator),
+		)
+		if err != nil {
+			return fmt.Errorf("create Admin API: %w", err)
+		}
 		quotaCounter, err := worker.NewRedisQuotaCounter(redisClient)
 		if err != nil {
 			return fmt.Errorf("create quota counter: %w", err)
@@ -297,4 +323,25 @@ func buildEmbedder(cfg config.Config) (embedder.Embedder, error) {
 		options = append(options, embedderopenai.WithBaseURL(cfg.EmbeddingBaseURL))
 	}
 	return embedderopenai.New(options...), nil
+}
+
+type migrationLockAdapter struct {
+	lock gateway.SessionLock
+}
+
+func (a migrationLockAdapter) WithSessionLock(
+	ctx context.Context,
+	sessionID string,
+	operation func() error,
+) error {
+	lease, err := a.lock.Acquire(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = lease.Release(releaseCtx)
+	}()
+	return operation()
 }

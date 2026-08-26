@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 )
 
@@ -104,6 +105,45 @@ func TestAdminRejectsUnknownJSONField(t *testing.T) {
 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestMigrationRoutes(t *testing.T) {
+	migrator := &fakeMigrator{status: storage.MigrationStatus{
+		ID: "migration-1", AppID: "app-a", FromBackend: "redis",
+		ToBackend: "mysql", Phase: storage.PhasePrepared,
+	}}
+	handler, err := NewHandler(
+		newMemoryStore(), nil, "admin", "test-password", WithMigrator(migrator),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	response := serveJSON(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/apps/app-a/migrations",
+		map[string]string{"from": "redis", "to": "mysql"},
+	)
+	if response.Code != http.StatusOK || migrator.startCalls != 1 {
+		t.Fatalf("start migration response = %d %s", response.Code, response.Body.String())
+	}
+	request := authorizedRequest(
+		t, http.MethodPost, "/api/v1/migrations/migration-1/advance", nil,
+	)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || migrator.status.Phase != storage.PhaseDualWrite {
+		t.Fatalf("advance response = %d %s", response.Code, response.Body.String())
+	}
+	request = authorizedRequest(
+		t, http.MethodPost, "/api/v1/migrations/migration-1/rollback", nil,
+	)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || migrator.status.Phase != storage.PhaseRolledBack {
+		t.Fatalf("rollback response = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -283,6 +323,28 @@ func (m *memoryStore) ListBindings(_ context.Context, appID string) ([]tenant.Ch
 type recordingCache struct {
 	invalidations int
 }
+
+type fakeMigrator struct {
+	status     storage.MigrationStatus
+	startCalls int
+}
+
+func (f *fakeMigrator) Start(context.Context, string, string, string) (string, error) {
+	f.startCalls++
+	return f.status.ID, nil
+}
+func (f *fakeMigrator) Advance(context.Context, string) (storage.MigrationPhase, error) {
+	f.status.Phase = storage.PhaseDualWrite
+	return f.status.Phase, nil
+}
+func (f *fakeMigrator) Rollback(context.Context, string) error {
+	f.status.Phase = storage.PhaseRolledBack
+	return nil
+}
+func (f *fakeMigrator) Status(context.Context, string) (storage.MigrationStatus, error) {
+	return f.status, nil
+}
+func (f *fakeMigrator) Resume(context.Context) error { return nil }
 
 func (c *recordingCache) ResolveBinding(context.Context, string, string) (tenant.Snapshot, error) {
 	return tenant.Snapshot{}, tenant.ErrNotFound
