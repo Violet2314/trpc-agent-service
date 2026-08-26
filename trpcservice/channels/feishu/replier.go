@@ -248,7 +248,20 @@ func (a *Adapter) doAuthorizedJSON(
 
 func decodeAPIResponse(response *http.Response, target any) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		var apiError struct {
+			Code    int    `json:"code"`
+			Message string `json:"msg"`
+		}
+		if json.Unmarshal(data, &apiError) == nil &&
+			(apiError.Code != 0 || apiError.Message != "") {
+			return fmt.Errorf(
+				"Feishu API HTTP %d code %d: %s",
+				response.StatusCode,
+				apiError.Code,
+				apiError.Message,
+			)
+		}
 		return fmt.Errorf("Feishu API HTTP status %d", response.StatusCode)
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(target); err != nil {

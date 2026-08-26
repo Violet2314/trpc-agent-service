@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -102,18 +103,29 @@ func (a *Adapter) handleEvent(w http.ResponseWriter, r *http.Request, sink chann
 	}
 
 	payload := body
+	signedEncryptedCallback := false
 	if encryptKey != "" {
 		timestamp := r.Header.Get("X-Lark-Request-Timestamp")
-		if err := verifyTimestamp(timestamp, a.now()); err != nil ||
-			!verifySignature(
-				timestamp,
-				r.Header.Get("X-Lark-Request-Nonce"),
-				encryptKey,
-				body,
-				r.Header.Get("X-Lark-Signature"),
-			) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid callback signature"})
-			return
+		nonce := r.Header.Get("X-Lark-Request-Nonce")
+		signature := r.Header.Get("X-Lark-Signature")
+		hasAnySignatureHeader := timestamp != "" || nonce != "" || signature != ""
+		if hasAnySignatureHeader {
+			if timestamp == "" || nonce == "" || signature == "" {
+				log.Printf("feishu callback rejected: incomplete signature headers")
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid callback signature"})
+				return
+			}
+			if err := verifyTimestamp(timestamp, a.now()); err != nil {
+				log.Printf("feishu callback rejected: timestamp validation failed: %v", err)
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid callback signature"})
+				return
+			}
+			if !verifySignature(timestamp, nonce, encryptKey, body, signature) {
+				log.Printf("feishu callback rejected: signature mismatch")
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid callback signature"})
+				return
+			}
+			signedEncryptedCallback = true
 		}
 		var encrypted struct {
 			Encrypt string `json:"encrypt"`
@@ -124,6 +136,7 @@ func (a *Adapter) handleEvent(w http.ResponseWriter, r *http.Request, sink chann
 		}
 		payload, err = decryptCallback(encrypted.Encrypt, encryptKey)
 		if err != nil {
+			log.Printf("feishu callback rejected: decryption failed: %v", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "decrypt callback"})
 			return
 		}
@@ -139,11 +152,17 @@ func (a *Adapter) handleEvent(w http.ResponseWriter, r *http.Request, sink chann
 		token = envelope.Token
 	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(verificationToken)) != 1 {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid verification token"})
+		log.Printf("feishu callback rejected: verification token mismatch")
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid verification token"})
 		return
 	}
 	if envelope.Type == "url_verification" || envelope.Challenge != "" {
 		writeJSON(w, http.StatusOK, map[string]string{"challenge": envelope.Challenge})
+		return
+	}
+	if encryptKey != "" && !signedEncryptedCallback {
+		log.Printf("feishu callback rejected: encrypted event missing signature headers")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid callback signature"})
 		return
 	}
 	if envelope.Header.EventType != "im.message.receive_v1" {

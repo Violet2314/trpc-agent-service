@@ -20,6 +20,9 @@ x-platform: &platform
     TRPC_SERVICE_EMBEDDING_DIMENSIONS: "${EMBEDDING_DIMENSIONS:-1536}"
     MODEL_API_KEY_TENANT_A: "${DEEPSEEK_API_KEY:-development-placeholder}"
     MODEL_API_KEY_TENANT_B: "${DEEPSEEK_API_KEY:-development-placeholder}"
+    FEISHU_APP_SECRET_TENANT_A: "${FEISHU_APP_SECRET_TENANT_A:-}"
+    FEISHU_VERIFY_TENANT_A: "${FEISHU_VERIFY_TENANT_A:-}"
+    FEISHU_ENCRYPT_KEY_TENANT_A: "${FEISHU_ENCRYPT_KEY_TENANT_A:-}"
   depends_on:
     redis:
       condition: service_healthy

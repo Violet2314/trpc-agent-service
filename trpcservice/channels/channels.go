@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 
@@ -112,6 +113,9 @@ func (r *Registry) Dispatch(
 		return fmt.Errorf("channel adapter %q returned nil replier", message.Channel)
 	}
 	err := replier.Reply(ctx, sessionID, message, events)
+	if err != nil {
+		log.Printf("channel %s reply failed: %v", message.Channel, err)
+	}
 	if recorder != nil {
 		recorder.ObserveDelivery(snapshot.Tenant.ID, message.Channel, err != nil)
 	}

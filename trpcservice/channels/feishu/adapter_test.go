@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -42,6 +43,41 @@ func TestFeishuURLVerification(t *testing.T) {
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "challenge-1") {
 		t.Fatalf("URL verification response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFeishuEncryptedURLVerificationWithoutSignatureHeaders(t *testing.T) {
+	t.Setenv("FEISHU_VERIFY", "verify-token")
+	t.Setenv("FEISHU_ENCRYPT", "encrypt-key")
+	snapshot := testFeishuSnapshot()
+	snapshot.Binding.Config["encrypt_key"] = "env:FEISHU_ENCRYPT"
+	adapter := newTestAdapter(t, snapshot, nil, "")
+	mux := http.NewServeMux()
+	if err := adapter.Run(context.Background(), mux, func(
+		context.Context,
+		gateway.InboundMessage,
+	) (gateway.Result, error) {
+		t.Fatal("URL verification unexpectedly invoked Gateway")
+		return gateway.Result{}, nil
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	plaintext := []byte(`{"type":"url_verification","challenge":"encrypted-challenge","token":"verify-token"}`)
+	encrypted := encryptCallbackForTest(t, plaintext, "encrypt-key")
+	body, err := json.Marshal(map[string]string{"encrypt": encrypted})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/channels/feishu/cli-test/events",
+		bytes.NewReader(body),
+	)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "encrypted-challenge") {
+		t.Fatalf("encrypted URL verification = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -194,6 +230,19 @@ func TestFeishuReplierCreatesAndUpdatesCard(t *testing.T) {
 	defer mu.Unlock()
 	if authCalls != 1 || createCalls != 1 || patchCalls != 1 {
 		t.Fatalf("API calls auth=%d create=%d patch=%d", authCalls, createCalls, patchCalls)
+	}
+}
+
+func TestDecodeFeishuAPIHTTPError(t *testing.T) {
+	response := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body: io.NopCloser(strings.NewReader(
+			`{"code":230001,"msg":"invalid receive_id"}`,
+		)),
+	}
+	err := decodeAPIResponse(response, &struct{}{})
+	if err == nil || !strings.Contains(err.Error(), "230001") {
+		t.Fatalf("decodeAPIResponse() error = %v", err)
 	}
 }
 
