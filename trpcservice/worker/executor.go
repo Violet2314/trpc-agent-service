@@ -47,11 +47,22 @@ type Redactor interface {
 
 // DefaultExecutor assembles a request-scoped LLMAgent and Runner.
 type DefaultExecutor struct {
-	backends storage.Factory
-	models   ModelFactory
-	tools    ToolProvider
-	governor Governor
-	redactor Redactor
+	backends     storage.Factory
+	models       ModelFactory
+	tools        ToolProvider
+	governor     Governor
+	redactor     Redactor
+	confirmation ConfirmationGate
+}
+
+// ExecutorOption configures optional Worker behavior.
+type ExecutorOption func(*DefaultExecutor)
+
+// WithConfirmationGate enables dangerous-tool confirmation.
+func WithConfirmationGate(gate ConfirmationGate) ExecutorOption {
+	return func(executor *DefaultExecutor) {
+		executor.confirmation = gate
+	}
 }
 
 // NewExecutor constructs a Worker executor.
@@ -61,6 +72,7 @@ func NewExecutor(
 	tools ToolProvider,
 	governor Governor,
 	redactor Redactor,
+	options ...ExecutorOption,
 ) (*DefaultExecutor, error) {
 	if backends == nil || models == nil || tools == nil {
 		return nil, errors.New("Worker backend, model, and tool factories are required")
@@ -71,13 +83,19 @@ func NewExecutor(
 	if redactor == nil {
 		redactor = NewPolicyRedactor()
 	}
-	return &DefaultExecutor{
+	executor := &DefaultExecutor{
 		backends: backends,
 		models:   models,
 		tools:    tools,
 		governor: governor,
 		redactor: redactor,
-	}, nil
+	}
+	for _, option := range options {
+		if option != nil {
+			option(executor)
+		}
+	}
+	return executor, nil
 }
 
 // Execute authorizes, assembles, and starts one debounced Agent turn.
@@ -97,10 +115,6 @@ func (e *DefaultExecutor) Execute(
 		return nil, fmt.Errorf("authorize Worker execution: %w", err)
 	}
 
-	modelInstance, err := e.models.Model(ctx, snapshot.App.Model)
-	if err != nil {
-		return nil, fmt.Errorf("create model: %w", err)
-	}
 	sessionService, err := e.backends.SessionService(snapshot.App)
 	if err != nil {
 		return nil, fmt.Errorf("create session service: %w", err)
@@ -125,13 +139,31 @@ func (e *DefaultExecutor) Execute(
 	// before registration and filtered again per invocation.
 	include := agenttool.NewIncludeToolNamesFilter(snapshot.App.Tools...)
 	visibleTools := agenttool.FilterTools(ctx, platformTools, include)
-	agentInstance := llmagent.New(
-		snapshot.App.AppName,
+	if e.confirmation != nil {
+		confirmationEvents, handled, err := e.confirmation.Resolve(
+			ctx, snapshot, sessionID, messages, visibleTools,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("resolve dangerous tool confirmation: %w", err)
+		}
+		if handled {
+			return confirmationEvents, nil
+		}
+	}
+	modelInstance, err := e.models.Model(ctx, snapshot.App.Model)
+	if err != nil {
+		return nil, fmt.Errorf("create model: %w", err)
+	}
+	agentOptions := []llmagent.Option{
 		llmagent.WithModel(modelInstance),
 		llmagent.WithInstruction("You are a helpful enterprise assistant. Follow tenant tool and data boundaries."),
 		llmagent.WithTools(visibleTools),
 		llmagent.WithToolFilter(include),
-	)
+	}
+	if e.confirmation != nil {
+		agentOptions = append(agentOptions, llmagent.WithToolCallbacks(e.confirmation.Callbacks(snapshot)))
+	}
+	agentInstance := llmagent.New(snapshot.App.AppName, agentOptions...)
 
 	runnerOptions := []runner.Option{runner.WithSessionService(sessionService)}
 	if memoryBackend.Service != nil {

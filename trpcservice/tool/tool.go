@@ -72,3 +72,11 @@ func (r *Registry) IsDangerous(name string) bool {
 	r.mu.RUnlock()
 	return ok && entry.Dangerous
 }
+
+// Lookup returns a registered tool by name.
+func (r *Registry) Lookup(name string) (agenttool.Tool, bool) {
+	r.mu.RLock()
+	entry, ok := r.entries[name]
+	r.mu.RUnlock()
+	return entry.Tool, ok
+}

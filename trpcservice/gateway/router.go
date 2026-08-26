@@ -250,6 +250,12 @@ func (r *Router) flush(snapshot tenant.Snapshot, sessionID string, message Inbou
 
 	forward := true
 	for event := range source {
+		if event.Decision != "" {
+			r.writeAudit(
+				ctx, snapshot, message, sessionID,
+				event.Decision, "", time.Since(started),
+			)
+		}
 		if !forward {
 			continue
 		}

@@ -202,6 +202,28 @@ func TestRouterLockHeldReschedules(t *testing.T) {
 	}
 }
 
+func TestRouterAuditsWorkerDecisions(t *testing.T) {
+	audit := &recordingAudit{}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer: NewDebouncer(time.Hour),
+		store: &fakeEventStore{pending: []storage.UserEvent{{
+			ID: 1, SessionID: "tenant-a:webui:user-1",
+		}}},
+		executor: &fakeExecutor{events: []worker.Event{
+			{Type: "text_delta", Text: "cancelled", Decision: "tool_denied"},
+			{Type: "done"},
+		}},
+		audit: audit,
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	router.Drain()
+	if !audit.hasDecision("tool_denied") {
+		t.Fatalf("audit records = %#v, want tool_denied", audit.records)
+	}
+}
+
 func TestRouterInfrastructureErrors(t *testing.T) {
 	t.Run("cache", func(t *testing.T) {
 		router := newTestRouter(t, routerTestDeps{
@@ -448,4 +470,26 @@ func (f *fakeDispatcher) Dispatch(
 		f.mu.Unlock()
 	}
 	return nil
+}
+
+type recordingAudit struct {
+	mu      sync.Mutex
+	records []platformlog.AuditRecord
+}
+
+func (r *recordingAudit) Write(_ context.Context, record platformlog.AuditRecord) {
+	r.mu.Lock()
+	r.records = append(r.records, record)
+	r.mu.Unlock()
+}
+
+func (r *recordingAudit) hasDecision(decision string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range r.records {
+		if record.Decision == decision {
+			return true
+		}
+	}
+	return false
 }

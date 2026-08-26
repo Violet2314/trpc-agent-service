@@ -32,6 +32,9 @@ func TestRegistry(t *testing.T) {
 	if !registry.IsDangerous("danger") || registry.IsDangerous("safe") {
 		t.Fatal("IsDangerous() returned wrong metadata")
 	}
+	if value, ok := registry.Lookup("danger"); !ok || value.Declaration().Name != "danger" {
+		t.Fatalf("Lookup(danger) = %#v, %v", value, ok)
+	}
 }
 
 type testTool struct {

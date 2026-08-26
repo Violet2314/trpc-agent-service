@@ -15,6 +15,7 @@ type Event struct {
 	ToolName    string `json:"tool_name,omitempty"`
 	Error       string `json:"error,omitempty"`
 	UsageTokens int    `json:"usage_tokens,omitempty"`
+	Decision    string `json:"decision,omitempty"`
 }
 
 // Executor runs one debounced batch while the caller owns the session lock.

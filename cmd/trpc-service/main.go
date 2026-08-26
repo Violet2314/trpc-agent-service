@@ -122,12 +122,22 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create quota counter: %w", err)
 		}
+		toolRegistry := platformtool.NewRegistry()
+		pendingStore, err := worker.NewRedisPendingStore(redisClient, 10*time.Minute)
+		if err != nil {
+			return fmt.Errorf("create pending confirmation store: %w", err)
+		}
+		confirmationGate, err := worker.NewRedisConfirmationGate(pendingStore, toolRegistry)
+		if err != nil {
+			return fmt.Errorf("create dangerous tool confirmation gate: %w", err)
+		}
 		executor, err := worker.NewExecutor(
 			backends,
 			worker.OpenAIModelFactory{},
-			platformtool.NewRegistry(),
+			toolRegistry,
 			worker.NewPolicyGovernor(quotaCounter),
 			worker.NewPolicyRedactor(),
+			worker.WithConfirmationGate(confirmationGate),
 		)
 		if err != nil {
 			return fmt.Errorf("create Worker executor: %w", err)

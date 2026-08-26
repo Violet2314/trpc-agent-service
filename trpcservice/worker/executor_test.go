@@ -135,6 +135,52 @@ func TestExecutorPolicyDenialsDoNotCallModel(t *testing.T) {
 	}
 }
 
+func TestExecutorResolvesConfirmationBeforeModel(t *testing.T) {
+	sessionService := sessioninmemory.NewSessionService()
+	t.Cleanup(func() { _ = sessionService.Close() })
+	memoryService := inmemory.NewMemoryService()
+	t.Cleanup(func() { _ = memoryService.Close() })
+	toolInstance := &callableTestTool{name: "delete_all"}
+	pendingStore := &memoryPendingStore{call: testPendingCall(), present: true}
+	gate, err := NewRedisConfirmationGate(pendingStore, &confirmationRegistry{
+		dangerous: map[string]bool{"delete_all": true},
+		tools:     map[string]agenttool.Tool{"delete_all": toolInstance},
+	})
+	if err != nil {
+		t.Fatalf("NewRedisConfirmationGate() error = %v", err)
+	}
+	models := &fakeModelFactory{model: &captureModel{}}
+	executor, err := NewExecutor(
+		&fakeBackendFactory{
+			session: sessionService,
+			memory:  storage.MemoryBackend{Service: memoryService},
+		},
+		models,
+		&fakeToolProvider{tools: []agenttool.Tool{toolInstance}},
+		nil,
+		nil,
+		WithConfirmationGate(gate),
+	)
+	if err != nil {
+		t.Fatalf("NewExecutor() error = %v", err)
+	}
+	snapshot := workerSnapshot()
+	snapshot.App.Tools = []string{"delete_all"}
+	stream, err := executor.Execute(
+		context.Background(),
+		snapshot,
+		"tenant-a:webui:user-1",
+		[]storage.UserEvent{{SenderID: "user-1", Text: "确认"}},
+	)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	events := collectEvents(stream)
+	if models.calls != 0 || toolInstance.calls != 1 || !hasDecision(events, "tool_confirmed") {
+		t.Fatalf("model calls=%d tool calls=%d events=%#v", models.calls, toolInstance.calls, events)
+	}
+}
+
 func TestExecutorValidationAndFactoryErrors(t *testing.T) {
 	if _, err := NewExecutor(nil, &fakeModelFactory{}, &fakeToolProvider{}, nil, nil); err == nil {
 		t.Fatal("NewExecutor() accepted nil backend factory")
