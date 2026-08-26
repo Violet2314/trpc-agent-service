@@ -3,6 +3,9 @@
 .DS_Store
 *.log
 *.swp
+.env
+.env.*
+!.env.example
 
 bin/
 dist/

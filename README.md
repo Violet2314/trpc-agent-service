@@ -160,8 +160,10 @@ cd trpc-agent-service
 ### Docker Compose（最小可运行双副本）
 
 ```bash
-# 必须替换开发占位值；模型和 pgvector Memory 联调需要真实 key。
-export OPENAI_API_KEY="..."
+# 复制模板后只在本地填写；.env 已被 gitignore。
+cp .env.example .env
+# DEEPSEEK_API_KEY 用于 deepseek-v4-flash；
+# EMBEDDING_API_KEY/BASE_URL 用于 pgvector 的独立 embedding 模型。
 export ADMIN_PASSWORD="..."
 docker compose up --build
 

@@ -41,3 +41,31 @@ func TestUnknownRoute(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
+
+func TestHTTPMuxCombinesMethodScopedRoutes(t *testing.T) {
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux := NewHTTPMux(HTTPOptions{
+		AdminHandler:   okHandler,
+		MetricsHandler: okHandler,
+	})
+	// This is the WebUI registration that previously conflicted with the
+	// method-agnostic Admin prefix at runtime.
+	mux.Handle("GET /", okHandler)
+
+	for _, path := range []string{"/", "/api/v1/tenants", "/metrics", "/healthz"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", path, response.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /healthz status = %d, want 405", response.Code)
+	}
+}

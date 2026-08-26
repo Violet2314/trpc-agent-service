@@ -20,32 +20,23 @@ func NewHTTPHandler(options ...HTTPOptions) http.Handler {
 // NewHTTPMux creates an extensible root mux for channel adapters.
 func NewHTTPMux(options ...HTTPOptions) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", getOnly(statusHandler("ok")))
-	mux.HandleFunc("/readyz", getOnly(statusHandler("ready")))
+	mux.HandleFunc("GET /healthz", statusHandler("ok"))
+	mux.HandleFunc("GET /readyz", statusHandler("ready"))
 	if len(options) > 0 && options[0].AdminHandler != nil {
-		mux.Handle("/api/v1/", options[0].AdminHandler)
+		for _, method := range []string{
+			http.MethodGet,
+			http.MethodPost,
+			http.MethodPut,
+			http.MethodPatch,
+			http.MethodDelete,
+		} {
+			mux.Handle(method+" /api/v1/", options[0].AdminHandler)
+		}
 	}
 	if len(options) > 0 && options[0].MetricsHandler != nil {
-		mux.Handle("/metrics", getOnlyHandler(options[0].MetricsHandler))
+		mux.Handle("GET /metrics", options[0].MetricsHandler)
 	}
 	return mux
-}
-
-func getOnlyHandler(next http.Handler) http.Handler {
-	return getOnly(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
-}
-
-func getOnly(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-			return
-		}
-		next(w, r)
-	}
 }
 
 func statusHandler(status string) http.HandlerFunc {

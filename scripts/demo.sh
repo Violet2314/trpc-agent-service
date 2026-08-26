@@ -76,12 +76,12 @@ api POST /api/v1/tenants '{
 echo "[3/7] creating apps with different backends"
 api POST /api/v1/tenants/tenant-a/apps '{
   "app_id":"app-a","tenant_id":"tenant-a","app_name":"tenant-a-support",
-  "model":{"provider":"openai-compatible","model":"gpt-4o-mini","api_key_ref":"env:MODEL_API_KEY_TENANT_A","timeout":30000000000},
+  "model":{"provider":"openai-compatible","model":"deepseek-v4-flash","api_key_ref":"env:MODEL_API_KEY_TENANT_A","base_url":"https://api.deepseek.com","timeout":30000000000},
   "tools":[],"backends":{"session":"redis","memory":"pgvector"}
 }' >/dev/null
 api POST /api/v1/tenants/tenant-b/apps '{
   "app_id":"app-b","tenant_id":"tenant-b","app_name":"tenant-b-support",
-  "model":{"provider":"openai-compatible","model":"gpt-4o-mini","api_key_ref":"env:MODEL_API_KEY_TENANT_B","timeout":30000000000},
+  "model":{"provider":"openai-compatible","model":"deepseek-v4-flash","api_key_ref":"env:MODEL_API_KEY_TENANT_B","base_url":"https://api.deepseek.com","timeout":30000000000},
   "tools":[],"backends":{"session":"mysql","memory":"mem0"}
 }' >/dev/null
 

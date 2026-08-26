@@ -15,10 +15,11 @@ x-platform: &platform
     TRPC_SERVICE_ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin-dev-password}"
     TRPC_SERVICE_EMBEDDING_MODEL: "${EMBEDDING_MODEL:-text-embedding-3-small}"
     TRPC_SERVICE_EMBEDDING_API_KEY_REF: "env:TRPC_SERVICE_EMBEDDING_API_KEY"
-    TRPC_SERVICE_EMBEDDING_API_KEY: "${OPENAI_API_KEY:-development-placeholder}"
+    TRPC_SERVICE_EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-development-placeholder}"
+    TRPC_SERVICE_EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-}"
     TRPC_SERVICE_EMBEDDING_DIMENSIONS: "${EMBEDDING_DIMENSIONS:-1536}"
-    MODEL_API_KEY_TENANT_A: "${OPENAI_API_KEY:-development-placeholder}"
-    MODEL_API_KEY_TENANT_B: "${OPENAI_API_KEY:-development-placeholder}"
+    MODEL_API_KEY_TENANT_A: "${DEEPSEEK_API_KEY:-development-placeholder}"
+    MODEL_API_KEY_TENANT_B: "${DEEPSEEK_API_KEY:-development-placeholder}"
   depends_on:
     redis:
       condition: service_healthy
@@ -105,9 +106,12 @@ services:
 
   mem0:
     image: mem0/mem0-api-server:latest
+    # Docker Hub currently publishes this image for arm64 only. Docker Desktop
+    # uses QEMU on amd64; for production build server/Dockerfile natively.
+    platform: linux/arm64
     restart: unless-stopped
     environment:
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-development-placeholder}"
+      OPENAI_API_KEY: "${MEM0_LLM_API_KEY:-development-placeholder}"
       JWT_SECRET: "${MEM0_JWT_SECRET:-replace-this-in-production}"
       AUTH_DISABLED: "true"
       POSTGRES_HOST: pgvector
