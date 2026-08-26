@@ -10,10 +10,11 @@ import (
 
 // Event is the platform-neutral projection of a tRPC-Agent-Go event.
 type Event struct {
-	Type     string
-	Text     string
-	ToolName string
-	Error    string
+	Type        string
+	Text        string
+	ToolName    string
+	Error       string
+	UsageTokens int
 }
 
 // Executor runs one debounced batch while the caller owns the session lock.
