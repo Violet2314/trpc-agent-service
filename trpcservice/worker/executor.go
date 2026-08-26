@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -13,6 +14,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool"
 
+	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 )
@@ -53,6 +55,7 @@ type DefaultExecutor struct {
 	governor     Governor
 	redactor     Redactor
 	confirmation ConfirmationGate
+	metrics      platformmetrics.Recorder
 }
 
 // ExecutorOption configures optional Worker behavior.
@@ -62,6 +65,13 @@ type ExecutorOption func(*DefaultExecutor)
 func WithConfirmationGate(gate ConfirmationGate) ExecutorOption {
 	return func(executor *DefaultExecutor) {
 		executor.confirmation = gate
+	}
+}
+
+// WithMetrics enables Worker model/tool metrics.
+func WithMetrics(recorder platformmetrics.Recorder) ExecutorOption {
+	return func(executor *DefaultExecutor) {
+		executor.metrics = recorder
 	}
 }
 
@@ -194,7 +204,7 @@ func (e *DefaultExecutor) Execute(
 	}
 
 	output := make(chan Event)
-	go e.projectEvents(ctx, snapshot, run, raw, output)
+	go e.projectEvents(ctx, snapshot, run, raw, output, time.Now())
 	return output, nil
 }
 
@@ -204,6 +214,7 @@ func (e *DefaultExecutor) projectEvents(
 	run runner.Runner,
 	raw <-chan *event.Event,
 	output chan<- Event,
+	started time.Time,
 ) {
 	defer close(output)
 	defer run.Close()
@@ -220,6 +231,14 @@ func (e *DefaultExecutor) projectEvents(
 			seenUsage[source.Response.ID] = true
 			tokens := source.Response.Usage.TotalTokens
 			_ = e.governor.RecordUsage(ctx, snapshot.Tenant.ID, tokens)
+			if e.metrics != nil {
+				e.metrics.ObserveModel(
+					snapshot.Tenant.ID,
+					snapshot.App.Model.Model,
+					time.Since(started),
+					tokens,
+				)
+			}
 			if !emitWorkerEvent(ctx, output, Event{Type: "usage", UsageTokens: tokens}) {
 				return
 			}
@@ -257,6 +276,14 @@ func (e *DefaultExecutor) projectEvents(
 		}
 		if source.Object == model.ObjectTypeToolResponse {
 			for _, choice := range source.Choices {
+				if e.metrics != nil {
+					e.metrics.ObserveTool(
+						snapshot.Tenant.ID,
+						choice.Message.ToolName,
+						time.Since(started),
+						false,
+					)
+				}
 				if !emitWorkerEvent(ctx, output, Event{
 					Type:     "tool_result",
 					ToolName: choice.Message.ToolName,

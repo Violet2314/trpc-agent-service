@@ -7,7 +7,8 @@ import (
 
 // HTTPOptions contains optional feature handlers assembled by main.
 type HTTPOptions struct {
-	AdminHandler http.Handler
+	AdminHandler   http.Handler
+	MetricsHandler http.Handler
 }
 
 // NewHTTPHandler creates the node HTTP handler. Feature-specific routes are
@@ -24,7 +25,16 @@ func NewHTTPMux(options ...HTTPOptions) *http.ServeMux {
 	if len(options) > 0 && options[0].AdminHandler != nil {
 		mux.Handle("/api/v1/", options[0].AdminHandler)
 	}
+	if len(options) > 0 && options[0].MetricsHandler != nil {
+		mux.Handle("/metrics", getOnlyHandler(options[0].MetricsHandler))
+	}
 	return mux
+}
+
+func getOnlyHandler(next http.Handler) http.Handler {
+	return getOnly(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+	})
 }
 
 func getOnly(next http.HandlerFunc) http.HandlerFunc {

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
+	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
 )
@@ -38,6 +39,14 @@ type Replier interface {
 type Registry struct {
 	mu       sync.RWMutex
 	adapters map[string]Adapter
+	metrics  platformmetrics.Recorder
+}
+
+// SetMetrics enables IM delivery metrics.
+func (r *Registry) SetMetrics(recorder platformmetrics.Recorder) {
+	r.mu.Lock()
+	r.metrics = recorder
+	r.mu.Unlock()
 }
 
 // NewRegistry constructs an empty channel registry.
@@ -85,17 +94,28 @@ func (r *Registry) Dispatch(
 ) error {
 	r.mu.RLock()
 	adapter := r.adapters[message.Channel]
+	recorder := r.metrics
 	r.mu.RUnlock()
 	if adapter == nil {
 		drain(events)
+		if recorder != nil {
+			recorder.ObserveDelivery(snapshot.Tenant.ID, message.Channel, true)
+		}
 		return fmt.Errorf("channel adapter %q is not registered", message.Channel)
 	}
 	replier := adapter.NewReplier(snapshot)
 	if replier == nil {
 		drain(events)
+		if recorder != nil {
+			recorder.ObserveDelivery(snapshot.Tenant.ID, message.Channel, true)
+		}
 		return fmt.Errorf("channel adapter %q returned nil replier", message.Channel)
 	}
-	return replier.Reply(ctx, sessionID, message, events)
+	err := replier.Reply(ctx, sessionID, message, events)
+	if recorder != nil {
+		recorder.ObserveDelivery(snapshot.Tenant.ID, message.Channel, err != nil)
+	}
+	return err
 }
 
 func drain(events <-chan worker.Event) {

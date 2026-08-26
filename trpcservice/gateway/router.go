@@ -7,7 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
+	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+
 	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
+	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
@@ -65,6 +70,7 @@ type Router struct {
 	executor   worker.Executor
 	dispatcher ReplyDispatcher
 	audit      platformlog.AuditWriter
+	metrics    platformmetrics.Recorder
 
 	lifecycleCtx    context.Context
 	cancelLifecycle context.CancelFunc
@@ -74,6 +80,16 @@ type Router struct {
 	stateChanged   *sync.Cond
 	draining       bool
 	activeHandlers int
+}
+
+// RouterOption configures optional Gateway integrations.
+type RouterOption func(*Router)
+
+// WithMetrics enables tenant-aware Gateway metrics.
+func WithMetrics(recorder platformmetrics.Recorder) RouterOption {
+	return func(router *Router) {
+		router.metrics = recorder
+	}
 }
 
 // NewRouter validates and assembles the inbound pipeline.
@@ -86,6 +102,7 @@ func NewRouter(
 	executor worker.Executor,
 	dispatcher ReplyDispatcher,
 	audit platformlog.AuditWriter,
+	options ...RouterOption,
 ) (*Router, error) {
 	if cache == nil || dedup == nil || lock == nil || debouncer == nil ||
 		events == nil || executor == nil {
@@ -111,11 +128,21 @@ func NewRouter(
 		cancelLifecycle: cancel,
 	}
 	router.stateChanged = sync.NewCond(&router.stateMu)
+	for _, option := range options {
+		if option != nil {
+			option(router)
+		}
+	}
 	return router, nil
 }
 
 // Handle durably ingests a message and returns before Runner execution.
 func (r *Router) Handle(ctx context.Context, message InboundMessage) (Result, error) {
+	ctx, span := agenttrace.Tracer.Start(ctx, "gateway.handle")
+	defer span.End()
+	if spanContext := span.SpanContext(); spanContext.IsValid() {
+		message.TraceID = spanContext.TraceID().String()
+	}
 	if !r.beginHandle() {
 		return Result{Outcome: OutcomeAgentOffline}, nil
 	}
@@ -140,6 +167,10 @@ func (r *Router) Handle(ctx context.Context, message InboundMessage) (Result, er
 			return Result{}, fmt.Errorf("resolve channel binding: %w", err)
 		}
 	}
+	span.SetAttributes(
+		attribute.String("tenant.id", snapshot.Tenant.ID),
+		attribute.String("channel", message.Channel),
+	)
 	if message.ChatType == "group" && !message.AddressedToBot {
 		r.writeAudit(ctx, snapshot, message, "", string(DropNotAddressedInGroup), "", time.Since(started))
 		return Result{Outcome: OutcomeDropped, DropReason: DropNotAddressedInGroup}, nil
@@ -184,11 +215,21 @@ func (r *Router) Handle(ctx context.Context, message InboundMessage) (Result, er
 	}
 
 	r.writeAudit(ctx, snapshot, message, sessionID, string(OutcomeIngested), "", time.Since(started))
-	r.scheduleFlush(snapshot, sessionID, message)
+	r.scheduleFlush(
+		snapshot,
+		sessionID,
+		message,
+		oteltrace.SpanContextFromContext(ctx),
+	)
 	return Result{Outcome: OutcomeIngested, SessionID: sessionID}, nil
 }
 
-func (r *Router) scheduleFlush(snapshot tenant.Snapshot, sessionID string, message InboundMessage) {
+func (r *Router) scheduleFlush(
+	snapshot tenant.Snapshot,
+	sessionID string,
+	message InboundMessage,
+	parent oteltrace.SpanContext,
+) {
 	r.stateMu.Lock()
 	draining := r.draining
 	r.stateMu.Unlock()
@@ -196,19 +237,34 @@ func (r *Router) scheduleFlush(snapshot tenant.Snapshot, sessionID string, messa
 		return
 	}
 	r.debouncer.Schedule(sessionID, func() {
-		r.flush(snapshot, sessionID, message)
+		r.flush(snapshot, sessionID, message, parent)
 	})
 }
 
-func (r *Router) flush(snapshot tenant.Snapshot, sessionID string, message InboundMessage) {
+func (r *Router) flush(
+	snapshot tenant.Snapshot,
+	sessionID string,
+	message InboundMessage,
+	parent oteltrace.SpanContext,
+) {
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(r.lifecycleCtx, executionTimeout)
+	base := oteltrace.ContextWithSpanContext(r.lifecycleCtx, parent)
+	executionCtx, cancel := context.WithTimeout(base, executionTimeout)
 	defer cancel()
+	ctx, span := agenttrace.Tracer.Start(
+		executionCtx,
+		"gateway.flush",
+		oteltrace.WithAttributes(
+			attribute.String("tenant.id", snapshot.Tenant.ID),
+			attribute.String("session.id", sessionID),
+		),
+	)
+	defer span.End()
 
 	lease, err := r.lock.Acquire(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, ErrHeld) {
-			r.scheduleFlush(snapshot, sessionID, message)
+			r.scheduleFlush(snapshot, sessionID, message, parent)
 			return
 		}
 		r.writeAudit(ctx, snapshot, message, sessionID, "execute_failed", "lock_acquire", time.Since(started))
@@ -237,10 +293,14 @@ func (r *Router) flush(snapshot tenant.Snapshot, sessionID string, message Inbou
 		return
 	}
 	replyEvents := make(chan worker.Event, 128)
+	replyCtx := oteltrace.ContextWithSpanContext(
+		r.lifecycleCtx,
+		oteltrace.SpanContextFromContext(ctx),
+	)
 	r.replyWG.Add(1)
 	go func() {
 		defer r.replyWG.Done()
-		if err := r.dispatcher.Dispatch(r.lifecycleCtx, snapshot, sessionID, message, replyEvents); err != nil {
+		if err := r.dispatcher.Dispatch(replyCtx, snapshot, sessionID, message, replyEvents); err != nil {
 			r.writeAudit(
 				context.Background(), snapshot, message, sessionID,
 				"reply_failed", "im_delivery", time.Since(started),
@@ -333,6 +393,15 @@ func (r *Router) writeAudit(
 		RequestID: message.MsgID,
 		TS:        time.Now(),
 	})
+	if r.metrics != nil {
+		r.metrics.ObserveRequest(
+			snapshot.Tenant.ID,
+			message.Channel,
+			decision,
+			errorType,
+			latency,
+		)
+	}
 }
 
 func validateInbound(message InboundMessage) error {

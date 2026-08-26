@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+
 	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
@@ -221,6 +225,43 @@ func TestRouterAuditsWorkerDecisions(t *testing.T) {
 	router.Drain()
 	if !audit.hasDecision("tool_denied") {
 		t.Fatalf("audit records = %#v, want tool_denied", audit.records)
+	}
+}
+
+func TestRouterTraceContinuesAcrossAsyncFlush(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	originalTracer := agenttrace.Tracer
+	agenttrace.Tracer = provider.Tracer("gateway-test")
+	t.Cleanup(func() {
+		agenttrace.Tracer = originalTracer
+		_ = provider.Shutdown(context.Background())
+	})
+	audit := &recordingAudit{}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer: NewDebouncer(time.Hour),
+		store: &fakeEventStore{pending: []storage.UserEvent{{
+			ID: 1, SessionID: "tenant-a:webui:user-1",
+		}}},
+		executor: &fakeExecutor{events: []worker.Event{{Type: "done"}}},
+		audit:    audit,
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	router.Drain()
+	spans := exporter.GetSpans()
+	var handleTrace, flushTrace string
+	for _, span := range spans {
+		switch span.Name {
+		case "gateway.handle":
+			handleTrace = span.SpanContext.TraceID().String()
+		case "gateway.flush":
+			flushTrace = span.SpanContext.TraceID().String()
+		}
+	}
+	if handleTrace == "" || flushTrace == "" || handleTrace != flushTrace {
+		t.Fatalf("trace IDs handle=%q flush=%q spans=%#v", handleTrace, flushTrace, spans)
 	}
 }
 

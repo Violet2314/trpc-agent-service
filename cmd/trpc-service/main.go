@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"
 	embedderopenai "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
 	"github.com/liuzengh/trpc-agent-service/trpcservice"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/admin"
@@ -25,6 +26,8 @@ import (
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecom"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
+	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
+	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
 	platformtool "github.com/liuzengh/trpc-agent-service/trpcservice/tool"
@@ -53,11 +56,37 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load node configuration: %w", err)
 	}
+	if cfg.OTELEndpoint != "" {
+		options := []agenttrace.Option{
+			agenttrace.WithServiceName("trpc-agent-service"),
+			agenttrace.WithServiceVersion(trpcservice.Version),
+		}
+		if strings.Contains(cfg.OTELEndpoint, "://") {
+			options = append(
+				options,
+				agenttrace.WithProtocol("http"),
+				agenttrace.WithEndpointURL(cfg.OTELEndpoint),
+			)
+		} else {
+			options = append(options, agenttrace.WithEndpoint(cfg.OTELEndpoint))
+		}
+		cleanTrace, err := agenttrace.Start(context.Background(), options...)
+		if err != nil {
+			return fmt.Errorf("start OpenTelemetry: %w", err)
+		}
+		defer func() {
+			if err := cleanTrace(); err != nil {
+				log.Printf("stop OpenTelemetry: %v", err)
+			}
+		}()
+	}
+	telemetryMetrics := platformmetrics.New()
 
 	var (
 		adminHandler    http.Handler
 		channelRegistry *channels.Registry
 		appRouter       *gateway.Router
+		auditWriter     platformlog.AuditWriter = platformlog.NopAuditWriter{}
 	)
 	if cfg.MySQLDSN != "" {
 		configStore, err := tenant.OpenMySQLStore(ctx, cfg.MySQLDSN)
@@ -68,6 +97,16 @@ func run(ctx context.Context, args []string) error {
 		if err := storage.ApplyMigrations(ctx, configStore.DB()); err != nil {
 			return fmt.Errorf("apply database migrations: %w", err)
 		}
+		mysqlAuditWriter, err := platformlog.NewMySQLAuditWriter(
+			configStore.DB(),
+			platformlog.NewRedactor(),
+			platformlog.AuditWriterConfig{},
+		)
+		if err != nil {
+			return fmt.Errorf("create audit writer: %w", err)
+		}
+		defer mysqlAuditWriter.Close()
+		auditWriter = mysqlAuditWriter
 		cache, err := tenant.NewConfigCache(configStore, cfg.ConfigCacheTTL)
 		if err != nil {
 			return fmt.Errorf("create config cache: %w", err)
@@ -138,11 +177,13 @@ func run(ctx context.Context, args []string) error {
 			worker.NewPolicyGovernor(quotaCounter),
 			worker.NewPolicyRedactor(),
 			worker.WithConfirmationGate(confirmationGate),
+			worker.WithMetrics(telemetryMetrics),
 		)
 		if err != nil {
 			return fmt.Errorf("create Worker executor: %w", err)
 		}
 		channelRegistry = channels.NewRegistry()
+		channelRegistry.SetMetrics(telemetryMetrics)
 		webAdapter, err := webui.New(webui.NewHub(), web.Handler())
 		if err != nil {
 			return fmt.Errorf("create WebUI adapter: %w", err)
@@ -172,14 +213,18 @@ func run(ctx context.Context, args []string) error {
 			eventStore,
 			executor,
 			channelRegistry,
-			nil,
+			auditWriter,
+			gateway.WithMetrics(telemetryMetrics),
 		)
 		if err != nil {
 			return fmt.Errorf("create Agent Gateway: %w", err)
 		}
 	}
 
-	mux := trpcservice.NewHTTPMux(trpcservice.HTTPOptions{AdminHandler: adminHandler})
+	mux := trpcservice.NewHTTPMux(trpcservice.HTTPOptions{
+		AdminHandler:   adminHandler,
+		MetricsHandler: telemetryMetrics.Handler(),
+	})
 	if channelRegistry != nil {
 		if err := channelRegistry.Run(ctx, mux, appRouter.Handle); err != nil {
 			return fmt.Errorf("start channel adapters: %w", err)
