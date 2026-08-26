@@ -205,3 +205,14 @@ HPA 使用 `autoscaling/v2`，按 CPU/内存扩缩到 2–10 副本，集群需�
 ./lint.sh
 ./coverage.sh
 ```
+
+### 终验演示
+
+平台和真实模型凭据就绪后，使用 Git Bash/WSL 运行：
+
+```bash
+./scripts/demo.sh --dry-run
+./scripts/demo.sh
+```
+
+脚本会创建两个租户（Redis+pgvector / MySQL+mem0）、建立独立 WebUI 会话、检查回复隔离、完整推进 Redis→MySQL Session 迁移六个阶段，并验证迁移后对话与租户指标。可通过 `BASE_URL`、`ADMIN_USER`、`ADMIN_PASSWORD` 覆盖默认连接参数。
