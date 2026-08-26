@@ -1,0 +1,13 @@
+listen_addr: ":8080"
+redis_addr: "127.0.0.1:6379"
+mysql_dsn: ""
+pgvector_dsn: ""
+mem0_base_url: ""
+otel_endpoint: ""
+admin_username: "admin"
+admin_password_ref: "env:TRPC_SERVICE_ADMIN_PASSWORD"
+debounce_ms: 1500
+config_cache_ttl: "30s"
+lock_ttl: "30s"
+dedup_inflight_ttl: "90s"
+dedup_done_ttl: "24h"

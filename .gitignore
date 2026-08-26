@@ -15,3 +15,7 @@ vendor/
 
 data/*
 !data/README.md
+
+# local design docs & spec (not committed with code)
+docs/
+spec/

@@ -1,2 +1,198 @@
-// Package config loads tenant, model, channel, and storage backend settings.
+// Package config loads node-level service configuration.
 package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const envPrefix = "TRPC_SERVICE_"
+
+// Config contains node-level settings. Tenant-specific settings are managed by
+// the tenant control plane and must not be added here.
+type Config struct {
+	ListenAddr       string        `yaml:"listen_addr"`
+	RedisAddr        string        `yaml:"redis_addr"`
+	MySQLDSN         string        `yaml:"mysql_dsn"`
+	PGVectorDSN      string        `yaml:"pgvector_dsn"`
+	Mem0BaseURL      string        `yaml:"mem0_base_url"`
+	OTELEndpoint     string        `yaml:"otel_endpoint"`
+	AdminUsername    string        `yaml:"admin_username"`
+	AdminPasswordRef string        `yaml:"admin_password_ref"`
+	Debounce         time.Duration `yaml:"-"`
+	ConfigCacheTTL   time.Duration `yaml:"-"`
+	LockTTL          time.Duration `yaml:"-"`
+	DedupInflightTTL time.Duration `yaml:"-"`
+	DedupDoneTTL     time.Duration `yaml:"-"`
+}
+
+type fileConfig struct {
+	ListenAddr       string `yaml:"listen_addr"`
+	RedisAddr        string `yaml:"redis_addr"`
+	MySQLDSN         string `yaml:"mysql_dsn"`
+	PGVectorDSN      string `yaml:"pgvector_dsn"`
+	Mem0BaseURL      string `yaml:"mem0_base_url"`
+	OTELEndpoint     string `yaml:"otel_endpoint"`
+	AdminUsername    string `yaml:"admin_username"`
+	AdminPasswordRef string `yaml:"admin_password_ref"`
+	DebounceMS       *int   `yaml:"debounce_ms"`
+	ConfigCacheTTL   string `yaml:"config_cache_ttl"`
+	LockTTL          string `yaml:"lock_ttl"`
+	DedupInflightTTL string `yaml:"dedup_inflight_ttl"`
+	DedupDoneTTL     string `yaml:"dedup_done_ttl"`
+}
+
+// Default returns safe development defaults. Backend connection settings may
+// remain empty until the corresponding implementation task is enabled.
+func Default() Config {
+	return Config{
+		ListenAddr:       ":8080",
+		RedisAddr:        "127.0.0.1:6379",
+		AdminUsername:    "admin",
+		AdminPasswordRef: "env:TRPC_SERVICE_ADMIN_PASSWORD",
+		Debounce:         1500 * time.Millisecond,
+		ConfigCacheTTL:   30 * time.Second,
+		LockTTL:          30 * time.Second,
+		DedupInflightTTL: 90 * time.Second,
+		DedupDoneTTL:     24 * time.Hour,
+	}
+}
+
+// Load reads an optional YAML file and applies TRPC_SERVICE_* environment
+// overrides. An empty path loads defaults plus environment variables.
+func Load(path string) (Config, error) {
+	cfg := Default()
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return Config{}, fmt.Errorf("read config %q: %w", path, err)
+		}
+		var raw fileConfig
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return Config{}, fmt.Errorf("decode config %q: %w", path, err)
+		}
+		if err := applyFile(&cfg, raw); err != nil {
+			return Config{}, fmt.Errorf("validate config %q: %w", path, err)
+		}
+	}
+	if err := applyEnvironment(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.ListenAddr == "" {
+		return Config{}, errors.New("listen address must not be empty")
+	}
+	if cfg.AdminPasswordRef != "" && !strings.HasPrefix(cfg.AdminPasswordRef, "env:") {
+		return Config{}, errors.New("admin_password_ref must use env: prefix")
+	}
+	return cfg, nil
+}
+
+func applyFile(cfg *Config, raw fileConfig) error {
+	setIfNotEmpty(&cfg.ListenAddr, raw.ListenAddr)
+	setIfNotEmpty(&cfg.RedisAddr, raw.RedisAddr)
+	setIfNotEmpty(&cfg.MySQLDSN, raw.MySQLDSN)
+	setIfNotEmpty(&cfg.PGVectorDSN, raw.PGVectorDSN)
+	setIfNotEmpty(&cfg.Mem0BaseURL, raw.Mem0BaseURL)
+	setIfNotEmpty(&cfg.OTELEndpoint, raw.OTELEndpoint)
+	setIfNotEmpty(&cfg.AdminUsername, raw.AdminUsername)
+	setIfNotEmpty(&cfg.AdminPasswordRef, raw.AdminPasswordRef)
+	if raw.DebounceMS != nil {
+		if *raw.DebounceMS < 0 {
+			return errors.New("debounce_ms must be non-negative")
+		}
+		cfg.Debounce = time.Duration(*raw.DebounceMS) * time.Millisecond
+	}
+	var err error
+	if cfg.ConfigCacheTTL, err = parseOptionalDuration(raw.ConfigCacheTTL, cfg.ConfigCacheTTL); err != nil {
+		return fmt.Errorf("config_cache_ttl: %w", err)
+	}
+	if cfg.LockTTL, err = parseOptionalDuration(raw.LockTTL, cfg.LockTTL); err != nil {
+		return fmt.Errorf("lock_ttl: %w", err)
+	}
+	if cfg.DedupInflightTTL, err = parseOptionalDuration(raw.DedupInflightTTL, cfg.DedupInflightTTL); err != nil {
+		return fmt.Errorf("dedup_inflight_ttl: %w", err)
+	}
+	if cfg.DedupDoneTTL, err = parseOptionalDuration(raw.DedupDoneTTL, cfg.DedupDoneTTL); err != nil {
+		return fmt.Errorf("dedup_done_ttl: %w", err)
+	}
+	return nil
+}
+
+func applyEnvironment(cfg *Config) error {
+	stringOverrides := []struct {
+		name   string
+		target *string
+	}{
+		{"LISTEN_ADDR", &cfg.ListenAddr},
+		{"REDIS_ADDR", &cfg.RedisAddr},
+		{"MYSQL_DSN", &cfg.MySQLDSN},
+		{"PGVECTOR_DSN", &cfg.PGVectorDSN},
+		{"MEM0_BASE_URL", &cfg.Mem0BaseURL},
+		{"OTEL_ENDPOINT", &cfg.OTELEndpoint},
+		{"ADMIN_USERNAME", &cfg.AdminUsername},
+		{"ADMIN_PASSWORD_REF", &cfg.AdminPasswordRef},
+	}
+	for _, override := range stringOverrides {
+		if value, ok := os.LookupEnv(envPrefix + override.name); ok {
+			*override.target = value
+		}
+	}
+
+	if value, ok := os.LookupEnv(envPrefix + "DEBOUNCE_MS"); ok {
+		ms, err := strconv.Atoi(value)
+		if err != nil || ms < 0 {
+			return fmt.Errorf("%sDEBOUNCE_MS must be a non-negative integer", envPrefix)
+		}
+		cfg.Debounce = time.Duration(ms) * time.Millisecond
+	}
+
+	durationOverrides := []struct {
+		name   string
+		target *time.Duration
+	}{
+		{"CONFIG_CACHE_TTL", &cfg.ConfigCacheTTL},
+		{"LOCK_TTL", &cfg.LockTTL},
+		{"DEDUP_INFLIGHT_TTL", &cfg.DedupInflightTTL},
+		{"DEDUP_DONE_TTL", &cfg.DedupDoneTTL},
+	}
+	for _, override := range durationOverrides {
+		if value, ok := os.LookupEnv(envPrefix + override.name); ok {
+			duration, err := parsePositiveDuration(value)
+			if err != nil {
+				return fmt.Errorf("%s%s: %w", envPrefix, override.name, err)
+			}
+			*override.target = duration
+		}
+	}
+	return nil
+}
+
+func parseOptionalDuration(value string, fallback time.Duration) (time.Duration, error) {
+	if value == "" {
+		return fallback, nil
+	}
+	return parsePositiveDuration(value)
+}
+
+func parsePositiveDuration(value string) (time.Duration, error) {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", value, err)
+	}
+	if duration <= 0 {
+		return 0, errors.New("duration must be positive")
+	}
+	return duration, nil
+}
+
+func setIfNotEmpty(target *string, value string) {
+	if value != "" {
+		*target = value
+	}
+}
