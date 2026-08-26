@@ -139,6 +139,8 @@
 
 ## 快速开始
 
+### 本地 Go 进程
+
 ```bash
 git clone https://github.com/liuzengh/trpc-agent-service.git
 cd trpc-agent-service
@@ -147,8 +149,59 @@ cd trpc-agent-service
 ./start.sh
 ```
 
+服务默认监听 `:8080`，可用 `GET /healthz`、`GET /readyz` 检查状态。启用完整平台需要配置 Redis、MySQL 及管理员密码，节点配置示例见 `config.example.yaml`；所有密钥配置必须使用 `env:VAR_NAME` 引用。
+
 停止服务：
 
 ```bash
 ./stop.sh
+```
+
+### Docker Compose（最小可运行双副本）
+
+```bash
+# 必须替换开发占位值；模型和 pgvector Memory 联调需要真实 key。
+export OPENAI_API_KEY="..."
+export ADMIN_PASSWORD="..."
+docker compose up --build
+
+curl http://localhost:8080/readyz
+curl http://localhost:8080/metrics
+```
+
+Compose 会启动 Nginx、两个无状态平台副本、Redis、MySQL、pgvector 和 mem0；Nginx 使用 `least_conn` 分发且未配置 sticky session。状态均落共享后端，因此同一会话可由任意平台副本处理。
+
+WebUI 地址：`http://localhost:8080/`。Admin API 使用 Basic Auth；创建租户、App 和 binding 后即可对话。首次清理全部本地数据可执行：
+
+```bash
+docker compose down -v
+```
+
+> mem0 官方 Docker Hub 的 OSS REST 镜像更新可能滞后。若 `mem0/mem0-api-server:latest` 无法使用，请从 mem0 官方仓库的 `server/` 目录构建同名本地镜像，再重新执行 Compose；平台其他组件不依赖 mem0 启动完成。
+
+### Kubernetes（生产推荐）
+
+`k8s/base` 提供 Deployment（2 副本、滚动发布）、Service、HPA、PDB、探针和资源限制。后端推荐使用托管 Redis/MySQL/PostgreSQL/mem0；先创建未提交到仓库的 Secret：
+
+```bash
+kubectl create secret generic trpc-agent-service \
+  --from-literal=TRPC_SERVICE_MYSQL_DSN='agent:...@tcp(mysql:3306)/agent?parseTime=true' \
+  --from-literal=TRPC_SERVICE_PGVECTOR_DSN='postgres://agent:...@pgvector:5432/agent?sslmode=disable' \
+  --from-literal=TRPC_SERVICE_ADMIN_PASSWORD='...' \
+  --from-literal=TRPC_SERVICE_EMBEDDING_API_KEY='...' \
+  --from-literal=MODEL_API_KEY_TENANT_A='...' \
+  --from-literal=MODEL_API_KEY_TENANT_B='...'
+
+kubectl apply -k k8s/base
+kubectl rollout status deployment/trpc-agent-service
+```
+
+HPA 使用 `autoscaling/v2`，按 CPU/内存扩缩到 2–10 副本，集群需安装 metrics-server。生产环境应通过 External Secrets/密钥管理服务生成 Secret，不要提交明文密钥。
+
+### 本地质量门禁
+
+```bash
+./format.sh
+./lint.sh
+./coverage.sh
 ```
