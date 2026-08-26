@@ -29,7 +29,7 @@ func TestExecutorFiltersToolsRedactsAndRecordsUsage(t *testing.T) {
 	t.Cleanup(func() { _ = memoryService.Close() })
 	backends := &fakeBackendFactory{
 		session: sessionService,
-		memory:  MemoryBackend{Service: memoryService},
+		memory:  storage.MemoryBackend{Service: memoryService},
 	}
 	governor := &recordingGovernor{}
 	executor, err := NewExecutor(
@@ -232,7 +232,7 @@ func (f *fakeModelFactory) Model(context.Context, tenant.ModelConfig) (model.Mod
 
 type fakeBackendFactory struct {
 	session session.Service
-	memory  MemoryBackend
+	memory  storage.MemoryBackend
 	err     error
 }
 
@@ -240,9 +240,11 @@ func (f *fakeBackendFactory) SessionService(tenant.AgentApp) (session.Service, e
 	return f.session, f.err
 }
 
-func (f *fakeBackendFactory) MemoryBackend(tenant.AgentApp) (MemoryBackend, error) {
+func (f *fakeBackendFactory) MemoryBackend(tenant.AgentApp) (storage.MemoryBackend, error) {
 	return f.memory, f.err
 }
+
+func (f *fakeBackendFactory) Close() error { return nil }
 
 type fakeToolProvider struct {
 	tools []agenttool.Tool

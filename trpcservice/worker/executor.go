@@ -9,10 +9,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
-	"trpc.group/trpc-go/trpc-agent-go/session"
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool"
 
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
@@ -25,20 +23,6 @@ var (
 	// ErrPermissionDenied means one or more IM users cannot invoke the app.
 	ErrPermissionDenied = errors.New("IM user permission denied")
 )
-
-// MemoryBackend represents the two incompatible memory integration contracts
-// exposed by tRPC-Agent-Go v1.11.2.
-type MemoryBackend struct {
-	Service  memory.Service
-	Ingestor session.Ingestor
-	Tools    []agenttool.Tool
-}
-
-// BackendFactory resolves tenant-selected shared backends.
-type BackendFactory interface {
-	SessionService(tenant.AgentApp) (session.Service, error)
-	MemoryBackend(tenant.AgentApp) (MemoryBackend, error)
-}
 
 // ModelFactory resolves a model without exposing its API key to callers.
 type ModelFactory interface {
@@ -63,7 +47,7 @@ type Redactor interface {
 
 // DefaultExecutor assembles a request-scoped LLMAgent and Runner.
 type DefaultExecutor struct {
-	backends BackendFactory
+	backends storage.Factory
 	models   ModelFactory
 	tools    ToolProvider
 	governor Governor
@@ -72,7 +56,7 @@ type DefaultExecutor struct {
 
 // NewExecutor constructs a Worker executor.
 func NewExecutor(
-	backends BackendFactory,
+	backends storage.Factory,
 	models ModelFactory,
 	tools ToolProvider,
 	governor Governor,
