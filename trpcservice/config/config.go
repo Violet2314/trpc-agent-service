@@ -17,45 +17,49 @@ const envPrefix = "TRPC_SERVICE_"
 // Config contains node-level settings. Tenant-specific settings are managed by
 // the tenant control plane and must not be added here.
 type Config struct {
-	ListenAddr       string        `yaml:"listen_addr"`
-	RedisAddr        string        `yaml:"redis_addr"`
-	MySQLDSN         string        `yaml:"mysql_dsn"`
-	PGVectorDSN      string        `yaml:"pgvector_dsn"`
-	Mem0BaseURL      string        `yaml:"mem0_base_url"`
-	OTELEndpoint     string        `yaml:"otel_endpoint"`
-	EmbeddingModel   string        `yaml:"embedding_model"`
-	EmbeddingKeyRef  string        `yaml:"embedding_api_key_ref"`
-	EmbeddingBaseURL string        `yaml:"embedding_base_url"`
-	EmbeddingDim     int           `yaml:"embedding_dimensions"`
-	ILinkRouteKeys   []string      `yaml:"ilink_route_keys"`
-	AdminUsername    string        `yaml:"admin_username"`
-	AdminPasswordRef string        `yaml:"admin_password_ref"`
-	Debounce         time.Duration `yaml:"-"`
-	ConfigCacheTTL   time.Duration `yaml:"-"`
-	LockTTL          time.Duration `yaml:"-"`
-	DedupInflightTTL time.Duration `yaml:"-"`
-	DedupDoneTTL     time.Duration `yaml:"-"`
+	ListenAddr        string        `yaml:"listen_addr"`
+	RedisAddr         string        `yaml:"redis_addr"`
+	MySQLDSN          string        `yaml:"mysql_dsn"`
+	PGVectorDSN       string        `yaml:"pgvector_dsn"`
+	Mem0BaseURL       string        `yaml:"mem0_base_url"`
+	OTELEndpoint      string        `yaml:"otel_endpoint"`
+	EmbeddingModel    string        `yaml:"embedding_model"`
+	EmbeddingKeyRef   string        `yaml:"embedding_api_key_ref"`
+	EmbeddingBaseURL  string        `yaml:"embedding_base_url"`
+	EmbeddingDim      int           `yaml:"embedding_dimensions"`
+	ILinkRouteKeys    []string      `yaml:"ilink_route_keys"`
+	WecomBotRouteKeys []string      `yaml:"wecombot_route_keys"`
+	WecomBotWSURL     string        `yaml:"wecombot_ws_url"`
+	AdminUsername     string        `yaml:"admin_username"`
+	AdminPasswordRef  string        `yaml:"admin_password_ref"`
+	Debounce          time.Duration `yaml:"-"`
+	ConfigCacheTTL    time.Duration `yaml:"-"`
+	LockTTL           time.Duration `yaml:"-"`
+	DedupInflightTTL  time.Duration `yaml:"-"`
+	DedupDoneTTL      time.Duration `yaml:"-"`
 }
 
 type fileConfig struct {
-	ListenAddr       string   `yaml:"listen_addr"`
-	RedisAddr        string   `yaml:"redis_addr"`
-	MySQLDSN         string   `yaml:"mysql_dsn"`
-	PGVectorDSN      string   `yaml:"pgvector_dsn"`
-	Mem0BaseURL      string   `yaml:"mem0_base_url"`
-	OTELEndpoint     string   `yaml:"otel_endpoint"`
-	EmbeddingModel   string   `yaml:"embedding_model"`
-	EmbeddingKeyRef  string   `yaml:"embedding_api_key_ref"`
-	EmbeddingBaseURL string   `yaml:"embedding_base_url"`
-	EmbeddingDim     *int     `yaml:"embedding_dimensions"`
-	ILinkRouteKeys   []string `yaml:"ilink_route_keys"`
-	AdminUsername    string   `yaml:"admin_username"`
-	AdminPasswordRef string   `yaml:"admin_password_ref"`
-	DebounceMS       *int     `yaml:"debounce_ms"`
-	ConfigCacheTTL   string   `yaml:"config_cache_ttl"`
-	LockTTL          string   `yaml:"lock_ttl"`
-	DedupInflightTTL string   `yaml:"dedup_inflight_ttl"`
-	DedupDoneTTL     string   `yaml:"dedup_done_ttl"`
+	ListenAddr        string   `yaml:"listen_addr"`
+	RedisAddr         string   `yaml:"redis_addr"`
+	MySQLDSN          string   `yaml:"mysql_dsn"`
+	PGVectorDSN       string   `yaml:"pgvector_dsn"`
+	Mem0BaseURL       string   `yaml:"mem0_base_url"`
+	OTELEndpoint      string   `yaml:"otel_endpoint"`
+	EmbeddingModel    string   `yaml:"embedding_model"`
+	EmbeddingKeyRef   string   `yaml:"embedding_api_key_ref"`
+	EmbeddingBaseURL  string   `yaml:"embedding_base_url"`
+	EmbeddingDim      *int     `yaml:"embedding_dimensions"`
+	ILinkRouteKeys    []string `yaml:"ilink_route_keys"`
+	WecomBotRouteKeys []string `yaml:"wecombot_route_keys"`
+	WecomBotWSURL     string   `yaml:"wecombot_ws_url"`
+	AdminUsername     string   `yaml:"admin_username"`
+	AdminPasswordRef  string   `yaml:"admin_password_ref"`
+	DebounceMS        *int     `yaml:"debounce_ms"`
+	ConfigCacheTTL    string   `yaml:"config_cache_ttl"`
+	LockTTL           string   `yaml:"lock_ttl"`
+	DedupInflightTTL  string   `yaml:"dedup_inflight_ttl"`
+	DedupDoneTTL      string   `yaml:"dedup_done_ttl"`
 }
 
 // Default returns safe development defaults. Backend connection settings may
@@ -128,6 +132,10 @@ func applyFile(cfg *Config, raw fileConfig) error {
 	if raw.ILinkRouteKeys != nil {
 		cfg.ILinkRouteKeys = append([]string(nil), raw.ILinkRouteKeys...)
 	}
+	if raw.WecomBotRouteKeys != nil {
+		cfg.WecomBotRouteKeys = append([]string(nil), raw.WecomBotRouteKeys...)
+	}
+	setIfNotEmpty(&cfg.WecomBotWSURL, raw.WecomBotWSURL)
 	setIfNotEmpty(&cfg.AdminUsername, raw.AdminUsername)
 	setIfNotEmpty(&cfg.AdminPasswordRef, raw.AdminPasswordRef)
 	if raw.DebounceMS != nil {
@@ -168,6 +176,7 @@ func applyEnvironment(cfg *Config) error {
 		{"EMBEDDING_BASE_URL", &cfg.EmbeddingBaseURL},
 		{"ADMIN_USERNAME", &cfg.AdminUsername},
 		{"ADMIN_PASSWORD_REF", &cfg.AdminPasswordRef},
+		{"WECOMBOT_WS_URL", &cfg.WecomBotWSURL},
 	}
 	for _, override := range stringOverrides {
 		if value, ok := os.LookupEnv(envPrefix + override.name); ok {
@@ -194,6 +203,14 @@ func applyEnvironment(cfg *Config) error {
 		for _, routeKey := range strings.Split(value, ",") {
 			if routeKey = strings.TrimSpace(routeKey); routeKey != "" {
 				cfg.ILinkRouteKeys = append(cfg.ILinkRouteKeys, routeKey)
+			}
+		}
+	}
+	if value, ok := os.LookupEnv(envPrefix + "WECOMBOT_ROUTE_KEYS"); ok {
+		cfg.WecomBotRouteKeys = nil
+		for _, routeKey := range strings.Split(value, ",") {
+			if routeKey = strings.TrimSpace(routeKey); routeKey != "" {
+				cfg.WecomBotRouteKeys = append(cfg.WecomBotRouteKeys, routeKey)
 			}
 		}
 	}

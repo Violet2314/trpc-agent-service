@@ -25,6 +25,7 @@ import (
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/ilink"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/webui"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecom"
+	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecombot"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
 	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
@@ -88,6 +89,7 @@ func run(ctx context.Context, args []string) error {
 		channelRegistry *channels.Registry
 		appRouter       *gateway.Router
 		ilinkChannel    *ilink.Adapter
+		wecomBotChannel *wecombot.Adapter
 		auditWriter     platformlog.AuditWriter = platformlog.NopAuditWriter{}
 	)
 	if cfg.MySQLDSN != "" {
@@ -248,6 +250,17 @@ func run(ctx context.Context, args []string) error {
 				return fmt.Errorf("register iLink adapter: %w", err)
 			}
 		}
+		if len(cfg.WecomBotRouteKeys) > 0 {
+			wecomBotChannel, err = wecombot.New(
+				cache, cfg.WecomBotRouteKeys, cfg.WecomBotWSURL,
+			)
+			if err != nil {
+				return fmt.Errorf("create WeCom bot adapter: %w", err)
+			}
+			if err := channelRegistry.Register(wecomBotChannel); err != nil {
+				return fmt.Errorf("register WeCom bot adapter: %w", err)
+			}
+		}
 		appRouter, err = gateway.NewRouter(
 			cache,
 			deduper,
@@ -273,6 +286,9 @@ func run(ctx context.Context, args []string) error {
 		cancelChannels()
 		if ilinkChannel != nil {
 			ilinkChannel.Wait()
+		}
+		if wecomBotChannel != nil {
+			wecomBotChannel.Wait()
 		}
 	}()
 	if channelRegistry != nil {
@@ -309,6 +325,9 @@ func run(ctx context.Context, args []string) error {
 	cancelChannels()
 	if ilinkChannel != nil {
 		ilinkChannel.Wait()
+	}
+	if wecomBotChannel != nil {
+		wecomBotChannel.Wait()
 	}
 	if appRouter != nil {
 		appRouter.Drain()

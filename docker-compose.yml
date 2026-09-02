@@ -23,6 +23,10 @@ x-platform: &platform
     FEISHU_APP_SECRET_TENANT_A: "${FEISHU_APP_SECRET_TENANT_A:-}"
     FEISHU_VERIFY_TENANT_A: "${FEISHU_VERIFY_TENANT_A:-}"
     FEISHU_ENCRYPT_KEY_TENANT_A: "${FEISHU_ENCRYPT_KEY_TENANT_A:-}"
+    # WeCom AI-bot long-connection channel. Route keys must match tenant
+    # bindings with channel "wecombot"; bot_secret references WECOM_BOT_SECRET.
+    TRPC_SERVICE_WECOMBOT_ROUTE_KEYS: "${WECOMBOT_ROUTE_KEYS:-}"
+    WECOM_BOT_SECRET: "${WECOM_BOT_SECRET:-}"
   depends_on:
     redis:
       condition: service_healthy
@@ -57,9 +61,15 @@ services:
 
   platform-1:
     <<: *platform
+    # WeCom AI-bot allows only ONE long connection per bot, so only this
+    # replica holds the wecombot channel. Feishu/webui stay load-balanced.
 
   platform-2:
     <<: *platform
+    environment:
+      # Override the YAML anchor: this replica must not dial the WeCom bot
+      # WebSocket or it would kick platform-1's connection.
+      TRPC_SERVICE_WECOMBOT_ROUTE_KEYS: ""
 
   redis:
     image: redis:7.4-alpine

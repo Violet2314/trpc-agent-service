@@ -182,9 +182,9 @@ func (b ChannelBinding) Validate() error {
 		return err
 	}
 	switch b.Channel {
-	case "wecom", "feishu", "ilink", "webui":
+	case "wecom", "wecombot", "feishu", "ilink", "webui":
 	default:
-		return errors.New("channel must be wecom, feishu, ilink, or webui")
+		return errors.New("channel must be wecom, wecombot, feishu, ilink, or webui")
 	}
 	if strings.TrimSpace(b.RouteKey) == "" {
 		return errors.New("route_key is required")
