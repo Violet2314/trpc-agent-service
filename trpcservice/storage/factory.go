@@ -1,11 +1,13 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -40,6 +42,15 @@ type SessionRoute struct {
 	Writers []string
 }
 
+// RouteSource resolves migration-time session routes from durable state so
+// every replica converges on the same route without process-local memory.
+type RouteSource interface {
+	ActiveRoute(ctx context.Context, appID string) (SessionRoute, bool, error)
+}
+
+// routeSourceTimeout bounds the durable route lookup on the request path.
+const routeSourceTimeout = 5 * time.Second
+
 // FactoryConfig contains node-level backend endpoints.
 type FactoryConfig struct {
 	RedisURL    string
@@ -64,6 +75,7 @@ type BackendFactory struct {
 	memories     map[string]MemoryBackend
 	closers      []io.Closer
 	routes       map[string]SessionRoute
+	routeSource  RouteSource
 }
 
 // NewBackendFactory constructs a backend factory. pgvectorEmbedder may be nil
@@ -85,16 +97,21 @@ func newBackendFactory(constructors backendConstructors) *BackendFactory {
 }
 
 // SessionService returns one cached session service per app version/backend.
+// Migration routes resolve from the durable RouteSource first so all replicas
+// converge; the process-local route remains for source-less deployments.
 func (f *BackendFactory) SessionService(app tenant.AgentApp) (session.Service, error) {
 	if app.ID == "" || app.TenantID == "" {
 		return nil, errors.New("session backend app and tenant IDs are required")
+	}
+	route, migrating, err := f.resolveRoute(app.ID)
+	if err != nil {
+		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
 		return nil, errors.New("backend factory is closed")
 	}
-	route, migrating := f.routes[app.ID]
 	if !migrating {
 		return f.sessionServiceLocked(app, app.Backends.Session)
 	}
@@ -111,6 +128,36 @@ func (f *BackendFactory) SessionService(app tenant.AgentApp) (session.Service, e
 		writers = append(writers, writer)
 	}
 	return newRoutedSessionService(reader, writers...), nil
+}
+
+// resolveRoute prefers the durable route source (shared across replicas) and
+// falls back to the process-local route set by the migrator.
+func (f *BackendFactory) resolveRoute(appID string) (SessionRoute, bool, error) {
+	f.mu.Lock()
+	source := f.routeSource
+	f.mu.Unlock()
+	if source != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), routeSourceTimeout)
+		defer cancel()
+		route, ok, err := source.ActiveRoute(ctx, appID)
+		if err != nil {
+			return SessionRoute{}, false, fmt.Errorf("resolve migration route: %w", err)
+		}
+		if ok {
+			return route, true, nil
+		}
+	}
+	f.mu.Lock()
+	route, ok := f.routes[appID]
+	f.mu.Unlock()
+	return route, ok, nil
+}
+
+// SetRouteSource installs a durable route resolver shared across replicas.
+func (f *BackendFactory) SetRouteSource(source RouteSource) {
+	f.mu.Lock()
+	f.routeSource = source
+	f.mu.Unlock()
 }
 
 // SessionServiceFor returns a concrete backend, bypassing migration routing.

@@ -173,6 +173,8 @@ curl http://localhost:8080/metrics
 
 Compose 会启动 Nginx、两个无状态平台副本、Redis、MySQL、pgvector 和 mem0；Nginx 使用 `least_conn` 分发且未配置 sticky session。状态均落共享后端，因此同一会话可由任意平台副本处理。
 
+> 安全边界：Admin API 使用 Basic Auth，凭据与租户密钥不得经明文 HTTP 传输。Compose 拓扑仅供本地演示；生产部署必须在 Nginx / 负载均衡层终结 TLS（或使用 Service Mesh mTLS），再转发到平台副本。
+
 WebUI 地址：`http://localhost:8080/`。Admin API 使用 Basic Auth；创建租户、App 和 binding 后即可对话。首次清理全部本地数据可执行：
 
 ```bash

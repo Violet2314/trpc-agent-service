@@ -122,19 +122,115 @@ func TestSessionMigratorFullFlowAndRollback(t *testing.T) {
 		t.Fatalf("resumed route did not read MySQL: %#v, %v", resumedSession, err)
 	}
 
-	rollbackID, err := migrator.Start(ctx, app.ID, "redis", "mysql")
-	if err != nil {
-		t.Fatalf("second Start() error = %v", err)
+	// A second migration whose source does not match the app's effective
+	// backend (mysql after the first migration completed) must be rejected
+	// instead of silently reverting routing to redis.
+	if _, err := migrator.Start(ctx, app.ID, "redis", "mysql"); err == nil {
+		t.Fatal("Start() after a completed migration did not reject a mismatched source backend")
 	}
-	if _, err := migrator.Advance(ctx, rollbackID); err != nil {
+
+	// Rollback of an in-flight migration restores the source route.
+	appB := factoryApp("app-b", 1, "redis", "pgvector")
+	appB.AppName = "tenant-b-support"
+	rollbackKey := session.Key{
+		AppName: appB.AppName, UserID: "user", SessionID: "session-00",
+	}
+	if _, err := source.CreateSession(ctx, rollbackKey, nil); err != nil {
+		t.Fatalf("seed app-b source session: %v", err)
+	}
+	migratorB, err := NewSessionMigrator(
+		store, &staticAppResolver{app: appB}, &staticSessionCatalog{}, nil, factory,
+	)
+	if err != nil {
+		t.Fatalf("NewSessionMigrator(app-b) error = %v", err)
+	}
+	rollbackID, err := migratorB.Start(ctx, appB.ID, "redis", "mysql")
+	if err != nil {
+		t.Fatalf("Start(app-b) error = %v", err)
+	}
+	if _, err := migratorB.Advance(ctx, rollbackID); err != nil {
 		t.Fatalf("Advance(dual_write) error = %v", err)
 	}
-	if err := migrator.Rollback(ctx, rollbackID); err != nil {
+	if err := migratorB.Rollback(ctx, rollbackID); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
-	rollbackStatus, err := migrator.Status(ctx, rollbackID)
+	rollbackStatus, err := migratorB.Status(ctx, rollbackID)
 	if err != nil || rollbackStatus.Phase != PhaseRolledBack {
 		t.Fatalf("rollback Status() = %#v, %v", rollbackStatus, err)
+	}
+	rolledBackService, err := factory.SessionService(appB)
+	if err != nil {
+		t.Fatalf("SessionService(app-b) error = %v", err)
+	}
+	if _, err := rolledBackService.GetSession(ctx, rollbackKey); err != nil {
+		t.Fatalf("rolled-back route did not read the source backend: %v", err)
+	}
+}
+
+// TestFactoryFollowsDurableMigrationAcrossReplicas kills the R1 attack: a
+// replica that never ran the migration must resolve its session route from
+// the durable migration store and read the cut-over backend.
+func TestFactoryFollowsDurableMigrationAcrossReplicas(t *testing.T) {
+	ctx := context.Background()
+	source := sessioninmemory.NewSessionService()
+	target := sessioninmemory.NewSessionService()
+	newReplica := func() *BackendFactory {
+		return newBackendFactory(backendConstructors{
+			redisSession: func(tenant.AgentApp) (session.Service, error) { return source, nil },
+			mysqlSession: func(tenant.AgentApp) (session.Service, error) { return target, nil },
+		})
+	}
+	replicaA := newReplica()
+	replicaB := newReplica()
+	t.Cleanup(func() { _ = replicaA.Close() })
+	t.Cleanup(func() { _ = replicaB.Close() })
+	store := newMemoryMigrationStore()
+	// Only replica B consults the durable route source, like a replica that
+	// never received a local SetSessionRoute call.
+	replicaB.SetRouteSource(NewMigrationRouteSource(store))
+
+	app := factoryApp("app-a", 1, "redis", "pgvector")
+	app.AppName = "tenant-a-support"
+	key := session.Key{AppName: app.AppName, UserID: "user", SessionID: "session-01"}
+	if _, err := source.CreateSession(ctx, key, session.StateMap{
+		"value": []byte("redis"),
+	}); err != nil {
+		t.Fatalf("seed source session: %v", err)
+	}
+	migrator, err := NewSessionMigrator(
+		store,
+		&staticAppResolver{app: app},
+		&staticSessionCatalog{keys: []session.Key{key}},
+		nil,
+		replicaA,
+	)
+	if err != nil {
+		t.Fatalf("NewSessionMigrator() error = %v", err)
+	}
+	id, err := migrator.Start(ctx, app.ID, "redis", "mysql")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	for _, want := range []MigrationPhase{
+		PhaseDualWrite, PhaseBackfill, PhaseVerify, PhaseCutRead,
+	} {
+		if got, err := migrator.Advance(ctx, id); err != nil || got != want {
+			t.Fatalf("Advance() = %q, %v; want %q", got, err, want)
+		}
+	}
+
+	// Remove the source copy: replica B must still read the session, proving
+	// it resolved the cut-read route from durable state instead of redis.
+	if err := source.DeleteSession(ctx, key); err != nil {
+		t.Fatalf("delete source session: %v", err)
+	}
+	serviceB, err := replicaB.SessionService(app)
+	if err != nil {
+		t.Fatalf("replicaB SessionService() error = %v", err)
+	}
+	got, err := serviceB.GetSession(ctx, key)
+	if err != nil || got == nil {
+		t.Fatalf("replicaB did not read the migrated backend: %#v, %v", got, err)
 	}
 }
 

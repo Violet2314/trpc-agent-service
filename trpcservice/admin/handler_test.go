@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
 	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
@@ -92,6 +93,59 @@ func TestAppBindingAndActivationRoutes(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("activate app status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+// TestActivateAppInvalidatesCachedSnapshots kills the R2 attack: activating a
+// new app version must evict the cached data-plane snapshot so the next
+// request resolves the new version instead of the stale one.
+func TestActivateAppInvalidatesCachedSnapshots(t *testing.T) {
+	store := newMemoryStore()
+	cache, err := tenant.NewConfigCache(store, time.Minute)
+	if err != nil {
+		t.Fatalf("NewConfigCache() error = %v", err)
+	}
+	handler, err := NewHandler(store, cache, "admin", "test-password")
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := store.UpsertTenant(ctx, testTenant()); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := store.UpsertApp(ctx, testApp()); err != nil {
+		t.Fatalf("seed app v1: %v", err)
+	}
+	if err := store.UpsertBinding(ctx, testBinding()); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	// Warm the cache with version 1.
+	snapshot, err := cache.ResolveBinding(ctx, "webui", "binding-a")
+	if err != nil || snapshot.App.Version != 1 {
+		t.Fatalf("warm ResolveBinding() = v%d, %v; want v1", snapshot.App.Version, err)
+	}
+
+	// Publish and activate version 2 with a different app name.
+	appV2 := testApp()
+	appV2.AppName = "tenant-a-support-v2"
+	if _, err := store.UpsertApp(ctx, appV2); err != nil {
+		t.Fatalf("seed app v2: %v", err)
+	}
+	request := authorizedRequest(t, http.MethodPost, "/api/v1/apps/app-a/versions/2/activate", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("activate status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	snapshot, err = cache.ResolveBinding(ctx, "webui", "binding-a")
+	if err != nil {
+		t.Fatalf("ResolveBinding() error = %v", err)
+	}
+	if snapshot.App.Version != 2 || snapshot.App.AppName != "tenant-a-support-v2" {
+		t.Fatalf("post-activate snapshot = v%d %q, want v2 tenant-a-support-v2",
+			snapshot.App.Version, snapshot.App.AppName)
 	}
 }
 

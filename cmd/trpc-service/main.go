@@ -156,6 +156,9 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create migration store: %w", err)
 		}
+		// Replicas that never ran a migration resolve its route from the
+		// durable migration table, so all replicas converge.
+		backends.SetRouteSource(storage.NewMigrationRouteSource(migrationStore))
 		sessionCatalog, err := storage.NewMySQLSessionCatalog(configStore.DB())
 		if err != nil {
 			return fmt.Errorf("create session catalog: %w", err)

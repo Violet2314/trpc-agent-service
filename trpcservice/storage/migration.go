@@ -101,7 +101,8 @@ func NewSessionMigrator(
 	}, nil
 }
 
-// Start verifies both backends and creates the prepared state.
+// Start verifies both backends, rejects conflicting migrations, and creates
+// the prepared state.
 func (m *SessionMigrator) Start(
 	ctx context.Context,
 	appID, from, to string,
@@ -112,6 +113,9 @@ func (m *SessionMigrator) Start(
 	app, err := m.apps.GetCurrentApp(ctx, appID)
 	if err != nil {
 		return "", fmt.Errorf("resolve migration app: %w", err)
+	}
+	if err := m.checkStartConflicts(ctx, app, from); err != nil {
+		return "", err
 	}
 	if _, err := m.factory.SessionServiceFor(app, from); err != nil {
 		return "", fmt.Errorf("prepare source backend: %w", err)
@@ -127,6 +131,8 @@ func (m *SessionMigrator) Start(
 		ID: id, AppID: appID, FromBackend: from, ToBackend: to,
 		Phase: PhasePrepared, Detail: map[string]any{}, UpdatedAt: time.Now(),
 	}
+	// Persist before applying the route: durable state is the source of truth
+	// from which every replica resolves migration routes.
 	if err := m.store.Create(ctx, status); err != nil {
 		return "", fmt.Errorf("create migration: %w", err)
 	}
@@ -134,6 +140,47 @@ func (m *SessionMigrator) Start(
 		return "", err
 	}
 	return id, nil
+}
+
+// checkStartConflicts prevents a new migration from silently reverting an
+// app's live routing: it rejects in-flight migrations and requires the source
+// backend to match the app's effective session backend (the target of the
+// latest completed migration, or the configured backend otherwise).
+func (m *SessionMigrator) checkStartConflicts(
+	ctx context.Context,
+	app tenant.AgentApp,
+	from string,
+) error {
+	statuses, err := m.store.ListActive(ctx)
+	if err != nil {
+		return fmt.Errorf("list migrations: %w", err)
+	}
+	effective := app.Backends.Session
+	var latestDone MigrationStatus
+	for _, status := range statuses {
+		if status.AppID != app.ID {
+			continue
+		}
+		if status.Phase != PhaseDone {
+			return fmt.Errorf(
+				"app %q already has migration %q in phase %q",
+				app.ID, status.ID, status.Phase,
+			)
+		}
+		if status.UpdatedAt.After(latestDone.UpdatedAt) {
+			latestDone = status
+		}
+	}
+	if latestDone.ID != "" {
+		effective = latestDone.ToBackend
+	}
+	if from != effective {
+		return fmt.Errorf(
+			"migration source backend %q does not match the app's effective session backend %q",
+			from, effective,
+		)
+	}
+	return nil
 }
 
 // Advance performs one complete transition.
@@ -175,10 +222,12 @@ func (m *SessionMigrator) Advance(ctx context.Context, id string) (MigrationPhas
 		return "", fmt.Errorf("unsupported migration phase %q", status.Phase)
 	}
 	status.UpdatedAt = time.Now()
-	if err := m.applyRoute(status); err != nil {
+	// Persist first: other replicas resolve routes from the migration store,
+	// so the durable phase must never trail the local route.
+	if err := m.store.Update(ctx, status); err != nil {
 		return "", err
 	}
-	if err := m.store.Update(ctx, status); err != nil {
+	if err := m.applyRoute(status); err != nil {
 		return "", err
 	}
 	return status.Phase, nil
@@ -192,10 +241,10 @@ func (m *SessionMigrator) Rollback(ctx context.Context, id string) error {
 	}
 	status.Phase = PhaseRolledBack
 	status.UpdatedAt = time.Now()
-	if err := m.applyRoute(status); err != nil {
+	if err := m.store.Update(ctx, status); err != nil {
 		return err
 	}
-	return m.store.Update(ctx, status)
+	return m.applyRoute(status)
 }
 
 // Status returns the persisted migration state.
@@ -218,28 +267,79 @@ func (m *SessionMigrator) Resume(ctx context.Context) error {
 }
 
 func (m *SessionMigrator) applyRoute(status MigrationStatus) error {
+	route, err := routeForPhase(status)
+	if err != nil {
+		return err
+	}
+	return m.factory.SetSessionRoute(status.AppID, route)
+}
+
+// routeForPhase maps a persisted migration phase to its session route. It is
+// the single mapping shared by the local migrator and the durable route
+// source so every replica derives the same route.
+func routeForPhase(status MigrationStatus) (SessionRoute, error) {
 	switch status.Phase {
 	case PhasePrepared, PhaseRolledBack:
-		return m.factory.SetSessionRoute(status.AppID, SessionRoute{
+		return SessionRoute{
 			Reader: status.FromBackend, Writers: []string{status.FromBackend},
-		})
+		}, nil
 	case PhaseDualWrite, PhaseBackfill, PhaseVerify:
-		return m.factory.SetSessionRoute(status.AppID, SessionRoute{
+		return SessionRoute{
 			Reader:  status.FromBackend,
 			Writers: []string{status.FromBackend, status.ToBackend},
-		})
+		}, nil
 	case PhaseCutRead:
-		return m.factory.SetSessionRoute(status.AppID, SessionRoute{
+		return SessionRoute{
 			Reader:  status.ToBackend,
 			Writers: []string{status.FromBackend, status.ToBackend},
-		})
+		}, nil
 	case PhaseStopOldWrite, PhaseDone:
-		return m.factory.SetSessionRoute(status.AppID, SessionRoute{
+		return SessionRoute{
 			Reader: status.ToBackend, Writers: []string{status.ToBackend},
-		})
+		}, nil
 	default:
-		return fmt.Errorf("cannot route migration phase %q", status.Phase)
+		return SessionRoute{}, fmt.Errorf("cannot route migration phase %q", status.Phase)
 	}
+}
+
+// MigrationRouteSource adapts a MigrationStore into a factory RouteSource so
+// replicas that never ran the migration still resolve its route.
+type MigrationRouteSource struct {
+	store MigrationStore
+}
+
+// NewMigrationRouteSource resolves session routes from durable migration
+// state.
+func NewMigrationRouteSource(store MigrationStore) *MigrationRouteSource {
+	return &MigrationRouteSource{store: store}
+}
+
+// ActiveRoute returns the route of the app's most recently updated migration.
+func (s *MigrationRouteSource) ActiveRoute(
+	ctx context.Context,
+	appID string,
+) (SessionRoute, bool, error) {
+	statuses, err := s.store.ListActive(ctx)
+	if err != nil {
+		return SessionRoute{}, false, err
+	}
+	var latest *MigrationStatus
+	for index := range statuses {
+		if statuses[index].AppID != appID {
+			continue
+		}
+		if latest == nil || statuses[index].UpdatedAt.After(latest.UpdatedAt) {
+			latest = &statuses[index]
+		}
+	}
+	if latest == nil {
+		return SessionRoute{}, false, nil
+	}
+	route, err := routeForPhase(*latest)
+	if err != nil {
+		return SessionRoute{}, false, err
+	}
+	return route, true, nil
 }
 
 func (m *SessionMigrator) backfill(

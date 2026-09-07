@@ -30,6 +30,9 @@ type SessionLock interface {
 // Lease is an owned session lock.
 type Lease interface {
 	Release(ctx context.Context) error
+	// Lost reports lease loss. The returned channel yields the loss reason
+	// exactly once and may be nil when the implementation cannot detect loss.
+	Lost() <-chan error
 }
 
 // Debouncer coalesces multiple schedules for one session.

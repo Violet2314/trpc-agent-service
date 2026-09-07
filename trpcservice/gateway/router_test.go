@@ -3,10 +3,13 @@ package gateway
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
@@ -65,14 +68,14 @@ func TestRouterHandleOutcomes(t *testing.T) {
 			claimErr: ErrDuplicate,
 			want: Result{
 				Outcome: OutcomeDropped, DropReason: DropDuplicate,
-				SessionID: "tenant-a:webui:user-1",
+				SessionID: "tenant-a:webui:p2p:user-1",
 			},
 		},
 		{
 			name:       "database duplicate",
 			message:    validInbound(),
 			appendErr:  storage.ErrDuplicateEvent,
-			want:       Result{Outcome: OutcomeDropped, DropReason: DropDuplicate, SessionID: "tenant-a:webui:user-1"},
+			want:       Result{Outcome: OutcomeDropped, DropReason: DropDuplicate, SessionID: "tenant-a:webui:p2p:user-1"},
 			wantMark:   1,
 			wantAppend: 1,
 		},
@@ -95,9 +98,27 @@ func TestRouterHandleOutcomes(t *testing.T) {
 		{
 			name:       "ingested",
 			message:    validInbound(),
-			want:       Result{Outcome: OutcomeIngested, SessionID: "tenant-a:webui:user-1"},
+			want:       Result{Outcome: OutcomeIngested, SessionID: "tenant-a:webui:p2p:user-1"},
 			wantMark:   1,
 			wantAppend: 1,
+		},
+		{
+			name: "oversized message ID",
+			message: func() InboundMessage {
+				value := validInbound()
+				value.MsgID = strings.Repeat("x", maxMsgIDLength+1)
+				return value
+			}(),
+			want: Result{Outcome: OutcomeDropped, DropReason: DropInvalidEvent},
+		},
+		{
+			name: "oversized sender ID",
+			message: func() InboundMessage {
+				value := validInbound()
+				value.SenderID = strings.Repeat("x", maxParticipantIDLength+1)
+				return value
+			}(),
+			want: Result{Outcome: OutcomeDropped, DropReason: DropInvalidEvent},
 		},
 	}
 
@@ -140,7 +161,7 @@ func TestRouterDrainFlushesAndMarksEventsConsumed(t *testing.T) {
 	debouncer := NewDebouncer(time.Hour)
 	store := &fakeEventStore{
 		pending: []storage.UserEvent{{
-			ID: 7, SessionID: "tenant-a:webui:user-1", TenantID: "tenant-a",
+			ID: 7, SessionID: "tenant-a:webui:p2p:user-1", TenantID: "tenant-a",
 			Channel: "webui", MsgID: "msg-1", SenderID: "user-1", Text: "hello",
 		}},
 	}
@@ -190,7 +211,7 @@ func TestRouterLockHeldReschedules(t *testing.T) {
 		debouncer: debouncer,
 		lock:      lock,
 		store: &fakeEventStore{pending: []storage.UserEvent{{
-			ID: 1, SessionID: "tenant-a:webui:user-1",
+			ID: 1, SessionID: "tenant-a:webui:p2p:user-1",
 		}}},
 	})
 	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
@@ -211,7 +232,7 @@ func TestRouterAuditsWorkerDecisions(t *testing.T) {
 	router := newTestRouter(t, routerTestDeps{
 		debouncer: NewDebouncer(time.Hour),
 		store: &fakeEventStore{pending: []storage.UserEvent{{
-			ID: 1, SessionID: "tenant-a:webui:user-1",
+			ID: 1, SessionID: "tenant-a:webui:p2p:user-1",
 		}}},
 		executor: &fakeExecutor{events: []worker.Event{
 			{Type: "text_delta", Text: "cancelled", Decision: "tool_denied"},
@@ -241,7 +262,7 @@ func TestRouterTraceContinuesAcrossAsyncFlush(t *testing.T) {
 	router := newTestRouter(t, routerTestDeps{
 		debouncer: NewDebouncer(time.Hour),
 		store: &fakeEventStore{pending: []storage.UserEvent{{
-			ID: 1, SessionID: "tenant-a:webui:user-1",
+			ID: 1, SessionID: "tenant-a:webui:p2p:user-1",
 		}}},
 		executor: &fakeExecutor{events: []worker.Event{{Type: "done"}}},
 		audit:    audit,
@@ -293,6 +314,216 @@ func TestRouterInfrastructureErrors(t *testing.T) {
 			t.Fatal("Handle() did not join append and release errors")
 		}
 	})
+}
+
+// TestFlushDispatchesFailureReplyWhenExecutorFails kills the R3 attack: after
+// the inbound message was ACKed and marked done, an executor start failure
+// must still produce a user-visible error event instead of silence.
+func TestFlushDispatchesFailureReplyWhenExecutorFails(t *testing.T) {
+	debouncer := &manualDebouncer{}
+	dispatcher := &recordingDispatcher{}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer:  debouncer,
+		dispatcher: dispatcher,
+		store: &fakeEventStore{pending: []storage.UserEvent{{
+			ID: 1, SessionID: "tenant-a:webui:p2p:user-1",
+		}}},
+		executor: &fakeExecutor{err: errors.New("model authentication failed")},
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	debouncer.flush()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		if events := dispatcher.recorded(); len(events) > 0 {
+			if events[0].Type != "error" || events[0].Error == "" {
+				t.Fatalf("failure reply = %#v, want error event", events[0])
+			}
+			return
+		}
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-deadline.C:
+			t.Fatal("executor failure produced no reply event")
+		}
+	}
+}
+
+// TestFlushAbortsExecutionWhenLeaseLost kills the R4 attack: losing the
+// session lock mid-run must cancel the in-flight execution instead of letting
+// it write concurrently with the new lock owner.
+func TestFlushAbortsExecutionWhenLeaseLost(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	lock, err := NewRedisSessionLock(client, RedisSessionLockConfig{
+		TTL: 500 * time.Millisecond, RenewInterval: 50 * time.Millisecond, MaxHold: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewRedisSessionLock() error = %v", err)
+	}
+	executor := newBlockingExecutor()
+	debouncer := &manualDebouncer{}
+	router := newTestRouter(t, routerTestDeps{
+		lock:      lock,
+		debouncer: debouncer,
+		executor:  executor,
+		store: &fakeEventStore{pending: []storage.UserEvent{{
+			ID: 1, SessionID: "tenant-a:webui:p2p:user-1",
+		}}},
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if debouncer.flush == nil {
+		t.Fatal("flush was not scheduled")
+	}
+	go debouncer.flush()
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor did not start")
+	}
+
+	// Steal the lock by replacing its value; renewal then fails, the lease
+	// reports loss, and the in-flight execution must be cancelled.
+	sessionID := DeriveSessionID("tenant-a", "webui", validInbound())
+	server.Set("lock:"+sessionID, "new-owner")
+
+	select {
+	case <-executor.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution was not cancelled after lease loss")
+	}
+}
+
+// TestFlushRetriesMarkConsumedAfterTransientFailure kills the R5 attack: a
+// transient MarkConsumed failure after a delivered reply must be retried so
+// the finished turn is not re-executed (and re-replied) on the next message.
+func TestFlushRetriesMarkConsumedAfterTransientFailure(t *testing.T) {
+	debouncer := &manualDebouncer{}
+	store := &flakyMarkStore{
+		pending:  []storage.UserEvent{{ID: 9, SessionID: "tenant-a:webui:p2p:user-1"}},
+		failures: 1,
+	}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer: debouncer,
+		store:     store,
+		executor:  &fakeExecutor{events: []worker.Event{{Type: "done"}}},
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	debouncer.flush()
+
+	if store.markCalls != 2 {
+		t.Fatalf("MarkConsumed calls = %d, want 2 (failure + retry)", store.markCalls)
+	}
+	if len(store.consumedIDs) != 1 || store.consumedIDs[0] != 9 {
+		t.Fatalf("consumed IDs = %v, want [9]", store.consumedIDs)
+	}
+}
+
+// TestAuditTruncatesOversizedIdentifiers kills the R7 attack: an oversized
+// hostile message ID must still produce a durable audit row (bounded to the
+// audit_log.request_id column) instead of a silently dropped insert.
+func TestAuditTruncatesOversizedIdentifiers(t *testing.T) {
+	audit := &recordingAudit{}
+	router := newTestRouter(t, routerTestDeps{audit: audit})
+	message := validInbound()
+	message.MsgID = strings.Repeat("x", 500)
+	message.SenderID = strings.Repeat("y", 500)
+
+	result, err := router.Handle(context.Background(), message)
+	if err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if result.Outcome != OutcomeDropped || result.DropReason != DropInvalidEvent {
+		t.Fatalf("Handle() = %#v, want dropped invalid_event", result)
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	if len(audit.records) != 1 {
+		t.Fatalf("audit records = %d, want 1", len(audit.records))
+	}
+	record := audit.records[0]
+	if record.Decision != string(DropInvalidEvent) {
+		t.Fatalf("audit decision = %q, want %q", record.Decision, DropInvalidEvent)
+	}
+	if len(record.RequestID) > maxMsgIDLength {
+		t.Fatalf("audit request_id length = %d, want <= %d", len(record.RequestID), maxMsgIDLength)
+	}
+	if len(record.UserID) > maxParticipantIDLength {
+		t.Fatalf("audit user_id length = %d, want <= %d", len(record.UserID), maxParticipantIDLength)
+	}
+}
+
+// TestDrainLetsInFlightRepliesFinish kills the R9 attack: a slow (but
+// healthy) replier must deliver its full reply during Drain instead of being
+// cancelled the moment shutdown starts.
+func TestDrainLetsInFlightRepliesFinish(t *testing.T) {
+	debouncer := NewDebouncer(time.Hour)
+	store := &fakeEventStore{pending: []storage.UserEvent{{
+		ID: 5, SessionID: "tenant-a:webui:p2p:user-1",
+	}}}
+	executor := &fakeExecutor{events: []worker.Event{
+		{Type: "text_delta", Text: "slow"},
+		{Type: "done"},
+	}}
+	dispatcher := &ctxAwareDispatcher{delay: 200 * time.Millisecond}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer:  debouncer,
+		store:      store,
+		executor:   executor,
+		dispatcher: dispatcher,
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	router.Drain()
+	if got := dispatcher.delivered(); got != 2 {
+		t.Fatalf("delivered events = %d, want 2 (slow reply was cut off by Drain)", got)
+	}
+}
+
+// TestDrainCancelsStuckRepliers keeps shutdown bounded: a replier blocked
+// past the grace period must be cancelled instead of hanging Drain forever.
+func TestDrainCancelsStuckRepliers(t *testing.T) {
+	original := drainReplyGrace
+	drainReplyGrace = 50 * time.Millisecond
+	t.Cleanup(func() { drainReplyGrace = original })
+
+	debouncer := NewDebouncer(time.Hour)
+	store := &fakeEventStore{pending: []storage.UserEvent{{
+		ID: 5, SessionID: "tenant-a:webui:p2p:user-1",
+	}}}
+	executor := &fakeExecutor{events: []worker.Event{{Type: "done"}}}
+	dispatcher := &stuckDispatcher{}
+	router := newTestRouter(t, routerTestDeps{
+		debouncer:  debouncer,
+		store:      store,
+		executor:   executor,
+		dispatcher: dispatcher,
+	})
+	if _, err := router.Handle(context.Background(), validInbound()); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		router.Drain()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain() hung on a stuck replier")
+	}
+	if !dispatcher.cancelled() {
+		t.Fatal("stuck replier was not cancelled after the grace period")
+	}
 }
 
 func TestNewRouterRejectsMissingDependencies(t *testing.T) {
@@ -428,6 +659,7 @@ func (f *fakeSessionLock) Acquire(context.Context, string) (Lease, error) {
 type fakeLease struct{}
 
 func (fakeLease) Release(context.Context) error { return nil }
+func (fakeLease) Lost() <-chan error            { return nil }
 
 type manualDebouncer struct {
 	scheduled int
@@ -491,6 +723,153 @@ func (f *fakeExecutor) Execute(
 	}
 	close(result)
 	return result, nil
+}
+
+// blockingExecutor starts a run that only finishes when its context is
+// cancelled, recording whether cancellation ever arrived.
+type blockingExecutor struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func newBlockingExecutor() *blockingExecutor {
+	return &blockingExecutor{
+		started:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+	}
+}
+
+func (e *blockingExecutor) Execute(
+	ctx context.Context,
+	_ tenant.Snapshot,
+	_ string,
+	_ []storage.UserEvent,
+) (<-chan worker.Event, error) {
+	close(e.started)
+	output := make(chan worker.Event)
+	go func() {
+		<-ctx.Done()
+		close(e.cancelled)
+		close(output)
+	}()
+	return output, nil
+}
+
+type recordingDispatcher struct {
+	mu     sync.Mutex
+	events []worker.Event
+}
+
+func (d *recordingDispatcher) Dispatch(
+	_ context.Context,
+	_ tenant.Snapshot,
+	_ string,
+	_ InboundMessage,
+	events <-chan worker.Event,
+) error {
+	for event := range events {
+		d.mu.Lock()
+		d.events = append(d.events, event)
+		d.mu.Unlock()
+	}
+	return nil
+}
+
+func (d *recordingDispatcher) recorded() []worker.Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]worker.Event(nil), d.events...)
+}
+
+// ctxAwareDispatcher mimics a real channel replier: it is slow but healthy,
+// and like the webui/IM repliers it drops events once its context is
+// cancelled. If Drain cancels too early, the reply is silently truncated.
+type ctxAwareDispatcher struct {
+	delay time.Duration
+	mu    sync.Mutex
+	count int
+}
+
+func (d *ctxAwareDispatcher) Dispatch(
+	ctx context.Context,
+	_ tenant.Snapshot,
+	_ string,
+	_ InboundMessage,
+	events <-chan worker.Event,
+) error {
+	time.Sleep(d.delay)
+	for range events {
+		select {
+		case <-ctx.Done():
+			return nil // remaining events are dropped, like a real replier
+		default:
+		}
+		d.mu.Lock()
+		d.count++
+		d.mu.Unlock()
+	}
+	return nil
+}
+
+func (d *ctxAwareDispatcher) delivered() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.count
+}
+
+// stuckDispatcher blocks until its context is cancelled, like a replier
+// hanging on a dead IM API.
+type stuckDispatcher struct {
+	mu           sync.Mutex
+	wasCancelled bool
+}
+
+func (d *stuckDispatcher) Dispatch(
+	ctx context.Context,
+	_ tenant.Snapshot,
+	_ string,
+	_ InboundMessage,
+	_ <-chan worker.Event,
+) error {
+	<-ctx.Done()
+	d.mu.Lock()
+	d.wasCancelled = true
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *stuckDispatcher) cancelled() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.wasCancelled
+}
+
+// flakyMarkStore fails MarkConsumed the first N times, then succeeds.
+type flakyMarkStore struct {
+	pending     []storage.UserEvent
+	failures    int
+	markCalls   int
+	consumedIDs []int64
+}
+
+func (f *flakyMarkStore) AppendUserEvent(context.Context, storage.UserEvent) error {
+	return nil
+}
+
+func (f *flakyMarkStore) PendingUserEvents(
+	context.Context, string, int64,
+) ([]storage.UserEvent, error) {
+	return f.pending, nil
+}
+
+func (f *flakyMarkStore) MarkConsumed(_ context.Context, ids []int64) error {
+	f.markCalls++
+	if f.failures > 0 {
+		f.failures--
+		return errors.New("transient mysql blip")
+	}
+	f.consumedIDs = append([]int64(nil), ids...)
+	return nil
 }
 
 type fakeDispatcher struct {

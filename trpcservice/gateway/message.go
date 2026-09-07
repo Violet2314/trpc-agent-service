@@ -47,11 +47,13 @@ type Result struct {
 }
 
 // DeriveSessionID deterministically isolates tenant/channel conversations.
+// The chat-type tag keeps the p2p and group namespaces disjoint, so a sender
+// ID like "group:x" can never collide with a group conversation ID "x".
 func DeriveSessionID(tenantID, channel string, message InboundMessage) string {
 	if message.ChatType == "group" {
 		return fmt.Sprintf("%s:%s:group:%s", tenantID, channel, message.GroupID)
 	}
-	return fmt.Sprintf("%s:%s:%s", tenantID, channel, message.SenderID)
+	return fmt.Sprintf("%s:%s:p2p:%s", tenantID, channel, message.SenderID)
 }
 
 // BuildDedupKey scopes platform message IDs to a tenant channel binding.

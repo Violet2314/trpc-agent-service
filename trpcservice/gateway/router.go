@@ -18,7 +18,21 @@ import (
 	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
 )
 
-const executionTimeout = 10 * time.Minute
+const (
+	executionTimeout = 10 * time.Minute
+	// markConsumedAttempts bounds retries of the consumed-marker so a transient
+	// MySQL blip does not re-execute (and re-reply) a finished turn.
+	markConsumedAttempts = 3
+	markConsumedBackoff  = 100 * time.Millisecond
+	// Inbound identifier caps sized to the tightest storage columns.
+	maxMsgIDLength         = 64
+	maxParticipantIDLength = 128
+)
+
+// drainReplyGrace bounds how long Drain waits for in-flight IM replies
+// before cancelling them; it stays well inside main's shutdown budget.
+// It is a variable so tests can shorten the grace window.
+var drainReplyGrace = 10 * time.Second
 
 // ReplyDispatcher resolves the inbound adapter and drains the Worker event
 // stream into its platform-specific reply path.
@@ -274,6 +288,7 @@ func (r *Router) flush(
 			return
 		}
 		r.writeAudit(ctx, snapshot, message, sessionID, "execute_failed", "lock_acquire", time.Since(started))
+		r.dispatchFailureReply(ctx, snapshot, sessionID, message, "lock_acquire")
 		return
 	}
 	defer func() {
@@ -284,10 +299,24 @@ func (r *Router) flush(
 			)
 		}
 	}()
+	// Abort execution when the lease is lost (renewal failure or max hold
+	// exceeded) instead of writing concurrently with a new lock owner.
+	if lost := lease.Lost(); lost != nil {
+		go func() {
+			select {
+			case err, ok := <-lost:
+				if ok && err != nil {
+					cancel()
+				}
+			case <-executionCtx.Done():
+			}
+		}()
+	}
 
 	messages, err := r.events.PendingUserEvents(ctx, sessionID, 0)
 	if err != nil {
 		r.writeAudit(ctx, snapshot, message, sessionID, "execute_failed", "event_read", time.Since(started))
+		r.dispatchFailureReply(ctx, snapshot, sessionID, message, "event_read")
 		return
 	}
 	if len(messages) == 0 {
@@ -296,6 +325,9 @@ func (r *Router) flush(
 	source, err := r.executor.Execute(ctx, snapshot, sessionID, messages)
 	if err != nil {
 		r.writeAudit(ctx, snapshot, message, sessionID, "execute_failed", "executor_start", time.Since(started))
+		// The inbound message stays pending and retries on the next delivery,
+		// but the user must not be left without any reply.
+		r.dispatchFailureReply(ctx, snapshot, sessionID, message, "executor_start")
 		return
 	}
 	replyEvents := make(chan worker.Event, 128)
@@ -337,14 +369,64 @@ func (r *Router) flush(
 	for _, pending := range messages {
 		eventIDs = append(eventIDs, pending.ID)
 	}
-	if err := r.events.MarkConsumed(ctx, eventIDs); err != nil {
+	if err := r.markConsumedWithRetry(ctx, eventIDs); err != nil {
 		r.writeAudit(ctx, snapshot, message, sessionID, "execute_failed", "event_commit", time.Since(started))
 		return
 	}
 	r.writeAudit(ctx, snapshot, message, sessionID, "executed", "", time.Since(started))
 }
 
-// Drain stops new ingestion, flushes pending sessions, and waits for repliers.
+// dispatchFailureReply delivers a terminal error event to the user when a
+// turn fails after the inbound message was already ACKed and marked done, so
+// the two-phase deduplication cannot be undone.
+func (r *Router) dispatchFailureReply(
+	ctx context.Context,
+	snapshot tenant.Snapshot,
+	sessionID string,
+	message InboundMessage,
+	errorType string,
+) {
+	events := make(chan worker.Event, 1)
+	events <- worker.Event{Type: "error", Error: "agent execution failed: " + errorType}
+	close(events)
+	replyCtx := oteltrace.ContextWithSpanContext(
+		r.lifecycleCtx,
+		oteltrace.SpanContextFromContext(ctx),
+	)
+	r.replyWG.Add(1)
+	go func() {
+		defer r.replyWG.Done()
+		if err := r.dispatcher.Dispatch(replyCtx, snapshot, sessionID, message, events); err != nil {
+			r.writeAudit(
+				context.Background(), snapshot, message, sessionID,
+				"reply_failed", "im_delivery", 0,
+			)
+		}
+	}()
+}
+
+// markConsumedWithRetry retries transient storage failures before leaving a
+// finished turn pending (which would duplicate the reply on the next message).
+func (r *Router) markConsumedWithRetry(ctx context.Context, eventIDs []int64) error {
+	var err error
+	for attempt := 0; attempt < markConsumedAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(markConsumedBackoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if err = r.events.MarkConsumed(ctx, eventIDs); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// Drain stops new ingestion, flushes pending sessions, and waits for
+// in-flight replies. Replies get a grace period to finish; only stuck
+// repliers (e.g. a hanging IM API) are cancelled so shutdown stays bounded.
 func (r *Router) Drain() {
 	r.stateMu.Lock()
 	r.draining = true
@@ -354,8 +436,19 @@ func (r *Router) Drain() {
 	r.stateMu.Unlock()
 
 	r.debouncer.FlushAll()
+	replies := make(chan struct{})
+	go func() {
+		r.replyWG.Wait()
+		close(replies)
+	}()
+	select {
+	case <-replies:
+	case <-time.After(drainReplyGrace):
+		r.cancelLifecycle()
+		<-replies
+		return
+	}
 	r.cancelLifecycle()
-	r.replyWG.Wait()
 }
 
 func (r *Router) beginHandle() bool {
@@ -389,14 +482,14 @@ func (r *Router) writeAudit(
 	r.audit.Write(ctx, platformlog.AuditRecord{
 		TenantID:  snapshot.Tenant.ID,
 		Channel:   message.Channel,
-		UserID:    message.SenderID,
+		UserID:    truncateRunes(message.SenderID, maxParticipantIDLength),
 		SessionID: sessionID,
 		AgentName: snapshot.App.AppName,
 		Decision:  decision,
 		Latency:   latency,
 		ErrorType: errorType,
 		TraceID:   message.TraceID,
-		RequestID: message.MsgID,
+		RequestID: truncateRunes(message.MsgID, maxMsgIDLength),
 		TS:        time.Now(),
 	})
 	if r.metrics != nil {
@@ -415,6 +508,18 @@ func validateInbound(message InboundMessage) error {
 		message.SenderID == "" {
 		return errors.New("channel, route key, message ID, and sender ID are required")
 	}
+	// Keep inbound identifiers within the tightest storage columns so a
+	// hostile or buggy client cannot force failed inserts downstream
+	// (message_event.msg_id and audit_log.request_id are the smallest).
+	if len(message.MsgID) > maxMsgIDLength {
+		return errors.New("message ID is too long")
+	}
+	if len(message.SenderID) > maxParticipantIDLength {
+		return errors.New("sender ID is too long")
+	}
+	if len(message.GroupID) > maxParticipantIDLength {
+		return errors.New("group ID is too long")
+	}
 	if message.ChatType != "p2p" && message.ChatType != "group" {
 		return errors.New("chat type must be p2p or group")
 	}
@@ -429,4 +534,18 @@ func wrapOptionalError(operation string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+// truncateRunes bounds audit fields to their column width without splitting a
+// multi-byte character, so an oversized hostile identifier still produces a
+// durable audit row instead of a silently dropped insert.
+func truncateRunes(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }

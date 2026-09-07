@@ -15,7 +15,7 @@ func TestDeriveSessionID(t *testing.T) {
 			tenantID: "tenant-a",
 			channel:  "feishu",
 			message:  InboundMessage{ChatType: "p2p", SenderID: "user-1"},
-			want:     "tenant-a:feishu:user-1",
+			want:     "tenant-a:feishu:p2p:user-1",
 		},
 		{
 			name:     "group",
@@ -29,7 +29,7 @@ func TestDeriveSessionID(t *testing.T) {
 			tenantID: "tenant-b",
 			channel:  "feishu",
 			message:  InboundMessage{ChatType: "p2p", SenderID: "user-1"},
-			want:     "tenant-b:feishu:user-1",
+			want:     "tenant-b:feishu:p2p:user-1",
 		},
 	}
 	for _, test := range tests {
@@ -38,6 +38,17 @@ func TestDeriveSessionID(t *testing.T) {
 				t.Fatalf("DeriveSessionID() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+// TestDeriveSessionIDSeparatesChatTypes kills the namespace-collision attack:
+// a p2p sender whose platform ID contains ":group:" must never share a session
+// with a real group conversation.
+func TestDeriveSessionIDSeparatesChatTypes(t *testing.T) {
+	p2p := InboundMessage{ChatType: "p2p", SenderID: "group:evil-user"}
+	group := InboundMessage{ChatType: "group", GroupID: "evil-user"}
+	if DeriveSessionID("tenant-a", "wecom", p2p) == DeriveSessionID("tenant-a", "wecom", group) {
+		t.Fatal("p2p and group session IDs collide across chat types")
 	}
 }
 

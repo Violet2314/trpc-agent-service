@@ -81,7 +81,7 @@ func TestILinkPollCursorAndContextToken(t *testing.T) {
 	if got, err := redisClient.Get(context.Background(), cursorKey("binding-a")).Result(); err != nil || got != "cursor-2" {
 		t.Fatalf("cursor = %q, %v", got, err)
 	}
-	sessionID := "tenant-a:ilink:wx-user"
+	sessionID := "tenant-a:ilink:p2p:wx-user"
 	if got, err := redisClient.Get(context.Background(), contextKey(sessionID)).Result(); err != nil || got != "ctx-101" {
 		t.Fatalf("context token = %q, %v", got, err)
 	}
@@ -97,7 +97,7 @@ func TestILinkReplierUsesCachedContext(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = redisClient.Close() })
-	sessionID := "tenant-a:ilink:wx-user"
+	sessionID := "tenant-a:ilink:p2p:wx-user"
 	if err := redisClient.Set(
 		context.Background(), contextKey(sessionID), "ctx-cache", contextTTL,
 	).Err(); err != nil {
@@ -158,7 +158,7 @@ func TestILinkContextExpiry(t *testing.T) {
 	close(events)
 	err := adapter.NewReplier(testILinkSnapshot()).Reply(
 		context.Background(),
-		"tenant-a:ilink:wx-user",
+		"tenant-a:ilink:p2p:wx-user",
 		gateway.InboundMessage{SenderID: "wx-user"},
 		events,
 	)

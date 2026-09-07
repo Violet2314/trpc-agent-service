@@ -90,6 +90,7 @@ func (l *RedisSessionLock) Acquire(ctx context.Context, sessionID string) (Lease
 		config: l.config,
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
+		lostCh: make(chan error, 1),
 	}
 	go lease.renew(ctx)
 	return lease, nil
@@ -103,6 +104,7 @@ type redisLease struct {
 
 	stop        chan struct{}
 	done        chan struct{}
+	lostCh      chan error
 	releaseOnce sync.Once
 
 	mu         sync.Mutex
@@ -170,10 +172,18 @@ func (l *redisLease) Release(ctx context.Context) error {
 
 func (l *redisLease) setLost(err error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.lost == nil {
 		l.lost = err
+		l.lostCh <- err
+		close(l.lostCh)
 	}
-	l.mu.Unlock()
+}
+
+// Lost exposes lease loss so holders can abort work instead of writing
+// concurrently with a new lock owner.
+func (l *redisLease) Lost() <-chan error {
+	return l.lostCh
 }
 
 func (l *redisLease) lostError() error {

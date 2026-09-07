@@ -188,11 +188,30 @@ func (h *Handler) activateApp(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateAppBindings(r, r.PathValue("appID"))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"app_id":  r.PathValue("appID"),
 		"version": version,
 		"active":  true,
 	})
+}
+
+// invalidateAppBindings evicts the cached data-plane snapshots of every
+// binding routed to the app so the newly activated version takes effect
+// immediately. Other replicas still converge within the cache TTL.
+func (h *Handler) invalidateAppBindings(r *http.Request, appID string) {
+	if h.cache == nil {
+		return
+	}
+	bindings, err := h.store.ListBindings(r.Context(), appID)
+	if err != nil {
+		// Activation must not fail because of a listing error; the cache TTL
+		// still bounds staleness.
+		return
+	}
+	for _, binding := range bindings {
+		h.cache.Invalidate(binding.Channel, binding.RouteKey)
+	}
 }
 
 func (h *Handler) upsertBinding(w http.ResponseWriter, r *http.Request) {
