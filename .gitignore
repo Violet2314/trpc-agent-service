@@ -19,6 +19,7 @@ vendor/
 data/*
 !data/README.md
 
-# local design docs & spec (not committed with code)
-docs/
+# local design notes stay private; ship the architecture deliverable only
+docs/*
+!docs/方案文档.md
 spec/
