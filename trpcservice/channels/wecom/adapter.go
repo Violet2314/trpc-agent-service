@@ -1,4 +1,10 @@
-// Package wecom implements encrypted Enterprise WeChat application callbacks.
+// Package wecom implements encrypted Enterprise WeChat *self-built app*
+// callbacks (自建应用 webhook：AES 加解密 + /callback).
+//
+// This is NOT the required WeCom integration and is NOT an acceptance item.
+// The original reading mixed it up with 智能机器人. Keep this adapter for
+// protocol completeness only; do not demo, operate, or follow up on a real
+// WeCom app callback. The in-scope WeCom channel is package wecombot.
 package wecom
 
 import (
@@ -11,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 const (

@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	platformmetrics "github.com/Violet2314/trpc-agent-service/trpcservice/metrics"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 // Sink is the adapter-facing Gateway entrypoint.
@@ -32,7 +32,7 @@ type Replier interface {
 		context.Context,
 		string,
 		gateway.InboundMessage,
-		<-chan worker.Event,
+		<-chan reply.Event,
 	) error
 }
 
@@ -91,7 +91,7 @@ func (r *Registry) Dispatch(
 	snapshot tenant.Snapshot,
 	sessionID string,
 	message gateway.InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	r.mu.RLock()
 	adapter := r.adapters[message.Channel]
@@ -122,7 +122,7 @@ func (r *Registry) Dispatch(
 	return err
 }
 
-func drain(events <-chan worker.Event) {
+func drain(events <-chan reply.Event) {
 	for range events {
 	}
 }

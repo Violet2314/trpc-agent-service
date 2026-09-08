@@ -13,7 +13,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 // MigrationPhase is a persisted online migration state.
@@ -29,6 +29,10 @@ const (
 	PhaseDone         MigrationPhase = "done"
 	PhaseRolledBack   MigrationPhase = "rolled_back"
 )
+
+// ErrMigrationConflict means a new Session migration cannot start because one
+// is already in flight or the source backend is not the live backend.
+var ErrMigrationConflict = errors.New("migration conflict")
 
 // MigrationStatus is the durable migration control record.
 type MigrationStatus struct {
@@ -163,8 +167,8 @@ func (m *SessionMigrator) checkStartConflicts(
 		}
 		if status.Phase != PhaseDone {
 			return fmt.Errorf(
-				"app %q already has migration %q in phase %q",
-				app.ID, status.ID, status.Phase,
+				"%w: app %q already has migration %q in phase %q",
+				ErrMigrationConflict, app.ID, status.ID, status.Phase,
 			)
 		}
 		if status.UpdatedAt.After(latestDone.UpdatedAt) {
@@ -176,8 +180,8 @@ func (m *SessionMigrator) checkStartConflicts(
 	}
 	if from != effective {
 		return fmt.Errorf(
-			"migration source backend %q does not match the app's effective session backend %q",
-			from, effective,
+			"%w: migration source backend %q does not match the app's effective session backend %q",
+			ErrMigrationConflict, from, effective,
 		)
 	}
 	return nil

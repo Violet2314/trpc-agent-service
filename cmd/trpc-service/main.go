@@ -18,23 +18,23 @@ import (
 	embedderopenai "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
 	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/admin"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/feishu"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/ilink"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/webui"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecom"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels/wecombot"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/config"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
-	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	platformtool "github.com/liuzengh/trpc-agent-service/trpcservice/tool"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/web"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/admin"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels/feishu"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels/ilink"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels/webui"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels/wecom"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels/wecombot"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/config"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	platformlog "github.com/Violet2314/trpc-agent-service/trpcservice/log"
+	platformmetrics "github.com/Violet2314/trpc-agent-service/trpcservice/metrics"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	platformtool "github.com/Violet2314/trpc-agent-service/trpcservice/tool"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/web"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/worker"
 )
 
 func main() {
@@ -221,7 +221,9 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("create WebUI Redis hub: %w", err)
 		}
-		webAdapter, err := webui.New(webHub, web.Handler())
+		webAdapter, err := webui.New(
+			webHub, web.Handler(), webui.StoreCatalog{Store: configStore},
+		)
 		if err != nil {
 			return fmt.Errorf("create WebUI adapter: %w", err)
 		}
@@ -235,6 +237,9 @@ func run(ctx context.Context, args []string) error {
 		if err := channelRegistry.Register(feishuAdapter); err != nil {
 			return fmt.Errorf("register Feishu adapter: %w", err)
 		}
+		// Self-built WeCom app callbacks remain registered for protocol
+		// completeness. The required WeCom IM is wecombot below; Feishu is
+		// the other required real IM.
 		wecomAdapter, err := wecom.New(cache, nil, "")
 		if err != nil {
 			return fmt.Errorf("create WeCom adapter: %w", err)

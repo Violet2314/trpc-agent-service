@@ -1,8 +1,5 @@
 # 文档目录
 
-在此放置架构设计、时序图、数据模型和运维方案。建议至少包含：
-
-- 系统架构图：Gateway、Worker、Channel Adapter、Storage Adapter、Plugin / Guardrail、Telemetry
-- 核心时序图：IM 消息 → Runner 执行 → Tool 调用 → Session / Memory 写入 → IM 回复
-- 数据模型与多后端适配说明
-- 风险清单
+- [方案文档.md](./方案文档.md)：架构图、时序图、数据模型、多后端、风险清单（题目交付物）
+- [验收操作.md](./验收操作.md)：现场验收，含 WebUI、Redis→MySQL 迁移、真实飞书、真实企微智能机器人
+- 实现细节以仓库根目录 `spec/SPEC.md` 为准

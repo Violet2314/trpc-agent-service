@@ -4,19 +4,14 @@ package worker
 import (
 	"context"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
-// Event is the platform-neutral projection of a tRPC-Agent-Go event.
-type Event struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	ToolName    string `json:"tool_name,omitempty"`
-	Error       string `json:"error,omitempty"`
-	UsageTokens int    `json:"usage_tokens,omitempty"`
-	Decision    string `json:"decision,omitempty"`
-}
+// Event is the Worker view of a reply.Event. Channel adapters must import
+// package reply instead of this package.
+type Event = reply.Event
 
 // Executor runs one debounced batch while the caller owns the session lock.
 type Executor interface {

@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 const (

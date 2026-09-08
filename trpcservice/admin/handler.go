@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 const maxRequestBody = 1 << 20
@@ -314,6 +314,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	case errors.Is(err, tenant.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, tenant.ErrInactive):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, storage.ErrMigrationConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		// Validation errors do not expose secrets and are safe to return.

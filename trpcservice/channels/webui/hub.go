@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 var (
@@ -17,14 +17,14 @@ const maxHistoryEvents = 512
 // StreamHub is the cross-request event transport used by WebUI.
 type StreamHub interface {
 	Ensure(sessionID, owner string) error
-	Subscribe(sessionID, owner string) (<-chan worker.Event, func(), error)
-	Publish(sessionID, owner string, event worker.Event) error
+	Subscribe(sessionID, owner string) (<-chan reply.Event, func(), error)
+	Publish(sessionID, owner string, event reply.Event) error
 }
 
 type topic struct {
 	owner       string
-	history     []worker.Event
-	subscribers map[uint64]chan worker.Event
+	history     []reply.Event
+	subscribers map[uint64]chan reply.Event
 	done        bool
 }
 
@@ -55,13 +55,13 @@ func (h *Hub) Ensure(sessionID, owner string) error {
 	}
 	h.topics[sessionID] = &topic{
 		owner:       owner,
-		subscribers: make(map[uint64]chan worker.Event),
+		subscribers: make(map[uint64]chan reply.Event),
 	}
 	return nil
 }
 
 // Subscribe replays history and follows future events for the session owner.
-func (h *Hub) Subscribe(sessionID, owner string) (<-chan worker.Event, func(), error) {
+func (h *Hub) Subscribe(sessionID, owner string) (<-chan reply.Event, func(), error) {
 	h.mu.Lock()
 	current, ok := h.topics[sessionID]
 	if !ok {
@@ -73,7 +73,7 @@ func (h *Hub) Subscribe(sessionID, owner string) (<-chan worker.Event, func(), e
 		return nil, nil, errStreamForbidden
 	}
 	buffer := len(current.history) + 128
-	output := make(chan worker.Event, buffer)
+	output := make(chan reply.Event, buffer)
 	for _, event := range current.history {
 		output <- event
 	}
@@ -104,7 +104,7 @@ func (h *Hub) Subscribe(sessionID, owner string) (<-chan worker.Event, func(), e
 }
 
 // Publish appends history and sends without blocking Agent execution.
-func (h *Hub) Publish(sessionID, owner string, event worker.Event) error {
+func (h *Hub) Publish(sessionID, owner string, event reply.Event) error {
 	if err := h.Ensure(sessionID, owner); err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func (h *Hub) Publish(sessionID, owner string, event worker.Event) error {
 	}
 	current.history = append(current.history, event)
 	if len(current.history) > maxHistoryEvents {
-		current.history = append([]worker.Event(nil), current.history[len(current.history)-maxHistoryEvents:]...)
+		current.history = append([]reply.Event(nil), current.history[len(current.history)-maxHistoryEvents:]...)
 	}
 	for id, subscriber := range current.subscribers {
 		select {

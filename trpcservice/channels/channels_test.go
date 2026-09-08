@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 func TestRegistryRunsAndDispatches(t *testing.T) {
@@ -31,8 +31,8 @@ func TestRegistryRunsAndDispatches(t *testing.T) {
 	if adapter.runCalls != 1 {
 		t.Fatalf("adapter run calls = %d, want 1", adapter.runCalls)
 	}
-	events := make(chan worker.Event, 1)
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 1)
+	events <- reply.Event{Type: "done"}
 	close(events)
 	if err := registry.Dispatch(
 		context.Background(),
@@ -50,9 +50,9 @@ func TestRegistryRunsAndDispatches(t *testing.T) {
 
 func TestRegistryUnknownAdapterDrains(t *testing.T) {
 	registry := NewRegistry()
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta"}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta"}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	if err := registry.Dispatch(
 		context.Background(), tenant.Snapshot{}, "session",
@@ -88,7 +88,7 @@ func (f *fakeReplier) Reply(
 	_ context.Context,
 	_ string,
 	_ gateway.InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	for range events {
 		f.events++

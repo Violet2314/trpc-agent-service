@@ -12,10 +12,10 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 func TestILinkPollCursorAndContextToken(t *testing.T) {
@@ -127,9 +127,9 @@ func TestILinkReplierUsesCachedContext(t *testing.T) {
 	defer server.Close()
 	snapshot := testILinkSnapshot()
 	adapter := newTestAdapter(t, snapshot, redisClient, server.Client(), server.URL)
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta", Text: "reply"}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta", Text: "reply"}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	err := adapter.NewReplier(snapshot).Reply(
 		context.Background(),
@@ -154,7 +154,7 @@ func TestILinkContextExpiry(t *testing.T) {
 	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = redisClient.Close() })
 	adapter := newTestAdapter(t, testILinkSnapshot(), redisClient, nil, "")
-	events := make(chan worker.Event)
+	events := make(chan reply.Event)
 	close(events)
 	err := adapter.NewReplier(testILinkSnapshot()).Reply(
 		context.Background(),

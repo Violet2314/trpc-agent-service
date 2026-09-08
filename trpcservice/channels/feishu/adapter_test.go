@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 func TestFeishuURLVerification(t *testing.T) {
@@ -208,10 +208,10 @@ func TestFeishuReplierCreatesAndUpdatesCard(t *testing.T) {
 	snapshot := testFeishuSnapshot()
 	snapshot.Binding.Config["app_secret"] = "env:FEISHU_SECRET"
 	adapter := newTestAdapter(t, snapshot, server.Client(), server.URL)
-	events := make(chan worker.Event, 3)
-	events <- worker.Event{Type: "text_delta", Text: "hello"}
-	events <- worker.Event{Type: "text_delta", Text: " world"}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 3)
+	events <- reply.Event{Type: "text_delta", Text: "hello"}
+	events <- reply.Event{Type: "text_delta", Text: " world"}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	err := adapter.NewReplier(snapshot).Reply(
 		context.Background(),

@@ -15,10 +15,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 func TestWeComHandshake(t *testing.T) {
@@ -176,9 +176,9 @@ func TestWeComReplierTokenCacheAndUTF8Segments(t *testing.T) {
 	defer server.Close()
 	snapshot := testWeComSnapshot()
 	adapter := newTestAdapter(t, snapshot, server.Client(), server.URL)
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta", Text: strings.Repeat("你", 1000)}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta", Text: strings.Repeat("你", 1000)}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	err := adapter.NewReplier(snapshot).Reply(
 		context.Background(),
@@ -441,8 +441,8 @@ func TestWeComReplierRefreshesInvalidToken(t *testing.T) {
 	defer server.Close()
 	snapshot := testWeComSnapshot()
 	adapter := newTestAdapter(t, snapshot, server.Client(), server.URL)
-	events := make(chan worker.Event, 1)
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 1)
+	events <- reply.Event{Type: "done"}
 	close(events)
 	if err := adapter.NewReplier(snapshot).Reply(
 		context.Background(), "session",
@@ -461,8 +461,8 @@ func TestWeComReplierRefreshesInvalidToken(t *testing.T) {
 func TestWeComReplierMissingTargetDrains(t *testing.T) {
 	setWeComTestSecrets(t)
 	adapter := newTestAdapter(t, testWeComSnapshot(), nil, "")
-	events := make(chan worker.Event, 1)
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 1)
+	events <- reply.Event{Type: "done"}
 	close(events)
 	if err := adapter.NewReplier(testWeComSnapshot()).Reply(
 		context.Background(), "session", gateway.InboundMessage{}, events,
@@ -485,9 +485,9 @@ func TestWeComReplierRejectsInvalidAgentID(t *testing.T) {
 	snapshot := testWeComSnapshot()
 	snapshot.Binding.Config["agent_id"] = "invalid"
 	adapter := newTestAdapter(t, snapshot, server.Client(), server.URL)
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "tool_call", ToolName: "danger"}
-	events <- worker.Event{Type: "error", Error: "denied"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "tool_call", ToolName: "danger"}
+	events <- reply.Event{Type: "error", Error: "denied"}
 	close(events)
 	if err := adapter.NewReplier(snapshot).Reply(
 		context.Background(), "session",

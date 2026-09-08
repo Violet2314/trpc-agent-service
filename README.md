@@ -107,34 +107,30 @@
 
 ## 代码目录
 
-下面只是一个示范目录，用来说明平台需要覆盖的职责分层。实现时不必严格按这个结构组织代码，只要模块边界清晰、能对应到设计方案即可。
+题目给的是职责分层示例。本仓库按该分层落地，对应关系如下（不必再找不存在的空目录）：
 
 ```txt
-|-- README.md              # 说明文档，包含设计、安装、使用
-|-- go.mod                 # Go module 定义
-|-- build.sh               # 构建项目
-|-- clean.sh               # 清理中间产物
-|-- coverage.sh            # 运行单测覆盖率
-|-- format.sh              # 格式化 Go 代码
-|-- lint.sh                # 静态检查
-|-- start.sh               # 启动服务
-|-- stop.sh                # 停止服务
-|-- data                   # 服务运行时数据
-|-- docs                   # 各模块说明与架构设计文档
-|-- cmd
-|   `-- trpc-service       # 命令行入口，可直接启动服务
-`-- trpcservice            # 源码
-    |-- agent              # 基于 tRPC-Agent-Go 的 Agent 定义
-    |-- channels           # 对接 IM 的 Channel Adapter
-    |-- config             # 租户与节点配置
-    |-- log                # 日志级别与脱敏
-    |-- metrics            # 监控指标
-    |-- skill              # 可运行的 Skill
-    |-- tenant             # 多租户模型与隔离
-    |-- tool               # 平台 Tool
-    |-- version.go         # 版本信息
-    |-- web                # 管理 / 对话页面
-    `-- workspace          # 工作目录，包含本地、容器等沙箱环境
+|-- README.md
+|-- spec/SPEC.md           # 实现 spec
+|-- docs
+|   |-- 方案文档.md         # 架构、时序、数据模型、风险清单（交付物）
+|   |-- 验收操作.md         # 现场验收步骤（含真实飞书/企微智能机器人）
+|   `-- README.md
+|-- cmd/trpc-service       # 装配根
+`-- trpcservice
+    |-- admin              # Admin API
+    |-- agent              # 占位：Agent 组装收在 worker
+    |-- channels            # IM 适配器（feishu / wecombot / wecom / webui / ilink）
+    |-- config              # 节点配置
+    |-- gateway             # 共享入站管线
+    |-- log / metrics
+    |-- reply               # Channel 使用的中立事件，避免依赖 worker
+    |-- skill / workspace   # 题目目录占位，非 P0
+    |-- storage             # 后端工厂 + Session 在线迁移
+    |-- tenant
+    |-- tool
+    |-- web                 # WebUI
+    `-- worker              # Runner 组装与治理
 ```
 
 ## 快速开始
@@ -142,7 +138,7 @@
 ### 本地 Go 进程
 
 ```bash
-git clone https://github.com/liuzengh/trpc-agent-service.git
+git clone https://github.com/Violet2314/trpc-agent-service.git
 cd trpc-agent-service
 
 ./build.sh
@@ -175,7 +171,7 @@ Compose 会启动 Nginx、两个无状态平台副本、Redis、MySQL、pgvector
 
 > 安全边界：Admin API 使用 Basic Auth，凭据与租户密钥不得经明文 HTTP 传输。Compose 拓扑仅供本地演示；生产部署必须在 Nginx / 负载均衡层终结 TLS（或使用 Service Mesh mTLS），再转发到平台副本。
 
-WebUI 地址：`http://localhost:8080/`。Admin API 使用 Basic Auth；创建租户、App 和 binding 后即可对话。首次清理全部本地数据可执行：
+WebUI 地址：`http://localhost:8080/`。打开后在左侧下拉框选择租户 Agent（demo 会提供 `binding-a` / `binding-b`），即可对话。下拉为空说明还没有 WebUI binding。Admin API 使用 Basic Auth；创建租户、App 和 binding 后即可对话。首次清理全部本地数据可执行：
 
 ```bash
 docker compose down -v
@@ -212,7 +208,11 @@ HPA 使用 `autoscaling/v2`，按 CPU/内存扩缩到 2–10 副本，集群需�
 
 ### 终验演示
 
-平台和真实模型凭据就绪后，使用 Git Bash/WSL 运行：
+完整勾选步骤见 **[docs/验收操作.md](docs/验收操作.md)**。
+
+两个真实 IM（处理条件）：**飞书事件订阅** + **企业微信智能机器人长连接**。WebUI 用来演示租户隔离和 Redis→MySQL Session 迁移，不能代替真实 IM。自建应用回调 `channels/wecom` 不是这次的企微通道。
+
+平台和真实模型凭据就绪后：
 
 ```bash
 ./scripts/demo.sh --dry-run
@@ -226,3 +226,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\demo.ps1
 ```
 
 脚本会创建两个租户（Redis+pgvector / MySQL+mem0）、建立独立 WebUI 会话、检查回复隔离、完整推进 Redis→MySQL Session 迁移六个阶段，并验证迁移后对话与租户指标。Bash 版可通过 `BASE_URL`、`ADMIN_USER`、`ADMIN_PASSWORD` 覆盖连接参数；PowerShell 版使用 `-BaseUrl`、`-AdminUser`、`-AdminPassword`。
+
+跑完后刷新 WebUI，左侧下拉即可在两个租户之间切换，不必手填 Binding ID。

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 // streamUpdateInterval throttles intermediate stream refreshes; the protocol
@@ -30,7 +30,7 @@ func (r *replier) Reply(
 	ctx context.Context,
 	_ string,
 	message gateway.InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	target, ok := message.Raw.(replyTarget)
 	if !ok || target.RouteKey == "" || target.ReqID == "" {

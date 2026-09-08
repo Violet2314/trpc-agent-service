@@ -1,8 +1,8 @@
 package worker
 
 import (
-	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	platformlog "github.com/Violet2314/trpc-agent-service/trpcservice/log"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 const redactedValue = "${REDACTED}"

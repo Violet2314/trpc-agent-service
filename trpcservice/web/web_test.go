@@ -14,7 +14,7 @@ func TestEmbeddedWebUI(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "多租户 Agent WebUI") {
+	if !strings.Contains(response.Body.String(), "选择 Agent") {
 		t.Fatal("embedded page content is missing")
 	}
 }

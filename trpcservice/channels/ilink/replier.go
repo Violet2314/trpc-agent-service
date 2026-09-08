@@ -14,9 +14,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 type replyTarget struct {
@@ -33,7 +33,7 @@ func (r *replier) Reply(
 	ctx context.Context,
 	sessionID string,
 	message gateway.InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	var content strings.Builder
 	for event := range events {

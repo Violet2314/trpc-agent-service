@@ -11,10 +11,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 var _ channels.Adapter = (*Adapter)(nil)
@@ -133,10 +133,10 @@ func TestAdapterEndToEnd(t *testing.T) {
 	}
 
 	// Stream a reply through the replier.
-	events := make(chan worker.Event, 4)
-	events <- worker.Event{Type: "text_delta", Text: "hello"}
-	events <- worker.Event{Type: "text_delta", Text: " world"}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 4)
+	events <- reply.Event{Type: "text_delta", Text: "hello"}
+	events <- reply.Event{Type: "text_delta", Text: " world"}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	replier := adapter.NewReplier(testSnapshot())
 	replyDone := make(chan error, 1)
@@ -315,16 +315,16 @@ func TestReplierErrors(t *testing.T) {
 	replier := adapter.NewReplier(testSnapshot())
 
 	// Missing reply target must drain events.
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta", Text: "x"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta", Text: "x"}
 	close(events)
 	if err := replier.Reply(context.Background(), "s", gateway.InboundMessage{Raw: "bogus"}, events); err == nil {
 		t.Error("expected error for missing reply target")
 	}
 
 	// Unknown route key has no connection.
-	events = make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta", Text: "x"}
+	events = make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta", Text: "x"}
 	close(events)
 	message := gateway.InboundMessage{Raw: replyTarget{RouteKey: "missing", ReqID: "r"}}
 	if err := replier.Reply(context.Background(), "s", message, events); err == nil {

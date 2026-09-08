@@ -12,10 +12,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 const (
@@ -25,16 +25,18 @@ const (
 
 // Adapter implements WebUI POST ingestion and SSE streaming.
 type Adapter struct {
-	hub    StreamHub
-	static http.Handler
+	hub     StreamHub
+	static  http.Handler
+	catalog Catalog
 }
 
-// New constructs a WebUI adapter.
-func New(hub StreamHub, static http.Handler) (*Adapter, error) {
+// New constructs a WebUI adapter. catalog may be nil; the desk dropdown
+// then renders empty until control-plane bindings exist.
+func New(hub StreamHub, static http.Handler, catalog Catalog) (*Adapter, error) {
 	if hub == nil {
 		return nil, errors.New("WebUI hub is required")
 	}
-	return &Adapter{hub: hub, static: static}, nil
+	return &Adapter{hub: hub, static: static, catalog: catalog}, nil
 }
 
 // Type implements channels.Adapter.
@@ -47,6 +49,7 @@ func (a *Adapter) Run(_ context.Context, mux *http.ServeMux, sink channels.Sink)
 	if mux == nil || sink == nil {
 		return errors.New("WebUI mux and Gateway sink are required")
 	}
+	mux.HandleFunc("GET /channels/webui/desks", a.handleDesks)
 	mux.HandleFunc("POST /channels/webui/{bindingID}/messages", func(w http.ResponseWriter, r *http.Request) {
 		a.handleMessage(w, r, sink)
 	})
@@ -60,6 +63,22 @@ func (a *Adapter) Run(_ context.Context, mux *http.ServeMux, sink channels.Sink)
 // NewReplier implements channels.Adapter.
 func (a *Adapter) NewReplier(tenant.Snapshot) channels.Replier {
 	return &replier{hub: a.hub}
+}
+
+func (a *Adapter) handleDesks(w http.ResponseWriter, r *http.Request) {
+	if a.catalog == nil {
+		writeJSON(w, http.StatusOK, []Desk{})
+		return
+	}
+	desks, err := a.catalog.ListDesks(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "list WebUI desks")
+		return
+	}
+	if desks == nil {
+		desks = []Desk{}
+	}
+	writeJSON(w, http.StatusOK, desks)
 }
 
 func (a *Adapter) handleMessage(w http.ResponseWriter, r *http.Request, sink channels.Sink) {
@@ -170,7 +189,7 @@ func (r *replier) Reply(
 	ctx context.Context,
 	sessionID string,
 	message gateway.InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	var publishErr error
 	publish := true

@@ -1,6 +1,9 @@
 // Package wecombot implements the WeCom AI-bot WebSocket long-connection
 // channel (智能机器人长连接), per:
 // https://developer.work.weixin.qq.com/document/path/101463
+//
+// This is the required WeCom IM (智能机器人长连接). Package wecom is the
+// self-built app callback and is not one of the two real IM acceptance paths.
 package wecombot
 
 import (

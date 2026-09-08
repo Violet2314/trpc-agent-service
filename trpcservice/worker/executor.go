@@ -14,9 +14,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool"
 
-	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	platformmetrics "github.com/Violet2314/trpc-agent-service/trpcservice/metrics"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 var (

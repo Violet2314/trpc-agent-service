@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/channels"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/gateway"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/channels"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/gateway"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 func TestWebUIMessageAndSSEEndToEnd(t *testing.T) {
 	hub := NewHub()
-	adapter, err := New(hub, nil)
+	adapter, err := New(hub, nil, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -63,9 +63,9 @@ func TestWebUIMessageAndSSEEndToEnd(t *testing.T) {
 		t.Fatal("POST response omitted session_id")
 	}
 
-	events := make(chan worker.Event, 2)
-	events <- worker.Event{Type: "text_delta", Text: "world"}
-	events <- worker.Event{Type: "done"}
+	events := make(chan reply.Event, 2)
+	events <- reply.Event{Type: "text_delta", Text: "world"}
+	events <- reply.Event{Type: "done"}
 	close(events)
 	if err := adapter.NewReplier(tenant.Snapshot{}).Reply(
 		context.Background(), result.SessionID, inbound, events,
@@ -105,11 +105,77 @@ func TestWebUIStreamOwnerIsolation(t *testing.T) {
 	}
 }
 
+func TestWebUIDesksListsCatalog(t *testing.T) {
+	catalog := desksCatalog{desks: []Desk{
+		{
+			RouteKey:   "binding-a",
+			TenantName: "Tenant A",
+			AppName:    "tenant-a-support",
+		},
+	}}
+	adapter, err := New(NewHub(), nil, catalog)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	mux := http.NewServeMux()
+	if err := adapter.Run(context.Background(), mux, unusedSink); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/channels/webui/desks", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var desks []Desk
+	if err := json.NewDecoder(response.Body).Decode(&desks); err != nil {
+		t.Fatalf("decode desks: %v", err)
+	}
+	if len(desks) != 1 || desks[0].RouteKey != "binding-a" {
+		t.Fatalf("desks = %#v", desks)
+	}
+}
+
+func TestWebUIDesksWithoutCatalog(t *testing.T) {
+	adapter, err := New(NewHub(), nil, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	mux := http.NewServeMux()
+	if err := adapter.Run(context.Background(), mux, unusedSink); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/channels/webui/desks", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
+type desksCatalog struct {
+	desks []Desk
+}
+
+func (c desksCatalog) ListDesks(context.Context) ([]Desk, error) {
+	return c.desks, nil
+}
+
+var unusedSink = channels.Sink(func(
+	context.Context,
+	gateway.InboundMessage,
+) (gateway.Result, error) {
+	return gateway.Result{}, nil
+})
+
 func TestWebUIValidation(t *testing.T) {
-	if _, err := New(nil, nil); err == nil {
+	if _, err := New(nil, nil, nil); err == nil {
 		t.Fatal("New() accepted nil hub")
 	}
-	adapter, err := New(NewHub(), nil)
+	adapter, err := New(NewHub(), nil, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

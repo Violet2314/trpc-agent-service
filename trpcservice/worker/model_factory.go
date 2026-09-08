@@ -9,7 +9,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	agentopenai "trpc.group/trpc-go/trpc-agent-go/model/openai"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 // OpenAIModelFactory builds OpenAI and OpenAI-compatible model clients.

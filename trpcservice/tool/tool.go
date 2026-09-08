@@ -10,7 +10,7 @@ import (
 
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 // Entry holds execution metadata not represented by the framework Tool.

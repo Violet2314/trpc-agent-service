@@ -1,4 +1,4 @@
-module github.com/liuzengh/trpc-agent-service
+module github.com/Violet2314/trpc-agent-service
 
 go 1.24.1
 

@@ -127,20 +127,36 @@ if grep -q "TENANT_B" /tmp/binding-a-events.log || grep -q "TENANT_A" /tmp/bindi
 fi
 
 echo "[6/7] migrating tenant-a Session from Redis to MySQL"
-migration_id="$(
-  api POST /api/v1/apps/app-a/migrations '{"from":"redis","to":"mysql"}' \
-    | jq -er '.migration_id'
+migration_response="$(
+  curl --silent --show-error --write-out '\n%{http_code}' \
+    --user "$ADMIN_USER:$ADMIN_PASSWORD" \
+    --request POST \
+    --header "Content-Type: application/json" \
+    --data '{"from":"redis","to":"mysql"}' \
+    "$BASE_URL/api/v1/apps/app-a/migrations"
 )"
-for expected in dual_write backfill verify cut_read stop_old_write done; do
-  phase="$(
-    api POST "/api/v1/migrations/$migration_id/advance" \
-      | jq -er '.phase'
-  )"
-  if [[ "$phase" != "$expected" ]]; then
-    echo "migration phase $phase, expected $expected" >&2
+migration_code="${migration_response##*$'\n'}"
+migration_body="${migration_response%$'\n'*}"
+if [[ "$migration_code" == "409" ]] || \
+   grep -Eq 'effective session backend|migration conflict|already has migration' <<<"$migration_body"; then
+  echo "  skipped: app-a Session is already on MySQL from a previous demo"
+else
+  if [[ "$migration_code" != "200" ]]; then
+    echo "start migration failed ($migration_code): $migration_body" >&2
     exit 1
   fi
-done
+  migration_id="$(jq -er '.migration_id' <<<"$migration_body")"
+  for expected in dual_write backfill verify cut_read stop_old_write done; do
+    phase="$(
+      api POST "/api/v1/migrations/$migration_id/advance" \
+        | jq -er '.phase'
+    )"
+    if [[ "$phase" != "$expected" ]]; then
+      echo "migration phase $phase, expected $expected" >&2
+      exit 1
+    fi
+  done
+fi
 
 echo "[7/7] verifying post-migration path and metrics"
 chat binding-a "Reply with MIGRATION_OK only."

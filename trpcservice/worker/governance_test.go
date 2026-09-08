@@ -9,8 +9,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 func TestPolicyGovernorPermissions(t *testing.T) {

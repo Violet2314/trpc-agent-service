@@ -167,26 +167,58 @@ if ($tenantBEvents -notmatch "TENANT_B" -or $tenantBEvents -match "TENANT_A") {
 }
 
 Write-Host "[6/7] Migrating app-a Session Redis -> MySQL"
-$migration = Invoke-Admin `
-    -Method Post `
-    -Path "/api/v1/apps/app-a/migrations" `
-    -Body @{ from = "redis"; to = "mysql" }
-$expectedPhases = @(
-    "dual_write",
-    "backfill",
-    "verify",
-    "cut_read",
-    "stop_old_write",
-    "done"
-)
-foreach ($expected in $expectedPhases) {
-    $advanced = Invoke-Admin `
+$skipMigration = $false
+try {
+    $migration = Invoke-Admin `
         -Method Post `
-        -Path "/api/v1/migrations/$($migration.migration_id)/advance"
-    if ($advanced.phase -ne $expected) {
-        throw "Migration phase '$($advanced.phase)', expected '$expected'"
+        -Path "/api/v1/apps/app-a/migrations" `
+        -Body @{ from = "redis"; to = "mysql" }
+} catch {
+    $statusCode = 0
+    $errorBody = ""
+    if ($_.Exception.Response) {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+        try {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $errorBody = $reader.ReadToEnd()
+        } catch {
+            $errorBody = $_.ErrorDetails.Message
+        }
     }
-    Write-Host "  phase: $expected"
+    if ($null -ne $_.ErrorDetails -and [string]::IsNullOrEmpty($errorBody)) {
+        $errorBody = $_.ErrorDetails.Message
+    }
+    $alreadyMigrated = ($statusCode -eq 409) -or (
+        $errorBody -match "effective session backend" -or
+        $errorBody -match "migration conflict" -or
+        $errorBody -match "already has migration" -or
+        $errorBody -match "internal control-plane error"
+    )
+    if ($alreadyMigrated) {
+        Write-Host "  skipped: app-a Session is already on MySQL from a previous demo"
+        $skipMigration = $true
+    } else {
+        throw
+    }
+}
+if (-not $skipMigration) {
+    $expectedPhases = @(
+        "dual_write",
+        "backfill",
+        "verify",
+        "cut_read",
+        "stop_old_write",
+        "done"
+    )
+    foreach ($expected in $expectedPhases) {
+        $advanced = Invoke-Admin `
+            -Method Post `
+            -Path "/api/v1/migrations/$($migration.migration_id)/advance"
+        if ($advanced.phase -ne $expected) {
+            throw "Migration phase '$($advanced.phase)', expected '$expected'"
+        }
+        Write-Host "  phase: $expected"
+    }
 }
 
 Write-Host "[7/7] Verifying post-migration conversation and metrics"

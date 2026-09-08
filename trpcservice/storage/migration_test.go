@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -11,7 +12,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 func TestSessionMigratorFullFlowAndRollback(t *testing.T) {
@@ -125,8 +126,8 @@ func TestSessionMigratorFullFlowAndRollback(t *testing.T) {
 	// A second migration whose source does not match the app's effective
 	// backend (mysql after the first migration completed) must be rejected
 	// instead of silently reverting routing to redis.
-	if _, err := migrator.Start(ctx, app.ID, "redis", "mysql"); err == nil {
-		t.Fatal("Start() after a completed migration did not reject a mismatched source backend")
+	if _, err := migrator.Start(ctx, app.ID, "redis", "mysql"); !errors.Is(err, ErrMigrationConflict) {
+		t.Fatalf("Start() after a completed migration = %v, want ErrMigrationConflict", err)
 	}
 
 	// Rollback of an in-flight migration restores the source route.

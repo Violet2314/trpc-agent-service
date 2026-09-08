@@ -183,6 +183,8 @@ func (b ChannelBinding) Validate() error {
 	}
 	switch b.Channel {
 	case "wecom", "wecombot", "feishu", "ilink", "webui":
+		// wecom = self-built app callback (not the required WeCom IM).
+		// Real IMs: wecombot (智能机器人) and feishu. webui is the demo channel.
 	default:
 		return errors.New("channel must be wecom, wecombot, feishu, ilink, or webui")
 	}

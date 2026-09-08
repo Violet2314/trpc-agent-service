@@ -7,7 +7,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 func TestRedisHubCrossNodePublishSubscribe(t *testing.T) {
@@ -35,16 +35,16 @@ func TestRedisHubCrossNodePublishSubscribe(t *testing.T) {
 	}
 	defer cancel()
 	if err := hubA.Publish(
-		"session-a", "owner-a", worker.Event{Type: "text_delta", Text: "cross-node"},
+		"session-a", "owner-a", reply.Event{Type: "text_delta", Text: "cross-node"},
 	); err != nil {
 		t.Fatalf("Publish(text) error = %v", err)
 	}
 	if err := hubA.Publish(
-		"session-a", "owner-a", worker.Event{Type: "done"},
+		"session-a", "owner-a", reply.Event{Type: "done"},
 	); err != nil {
 		t.Fatalf("Publish(done) error = %v", err)
 	}
-	var received []worker.Event
+	var received []reply.Event
 	timeout := time.NewTimer(time.Second)
 	defer timeout.Stop()
 	for {

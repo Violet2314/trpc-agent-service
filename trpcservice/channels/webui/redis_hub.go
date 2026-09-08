@@ -9,7 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
 )
 
 const redisStreamTTL = 24 * time.Hour
@@ -58,7 +58,7 @@ func (h *RedisHub) Ensure(sessionID, owner string) error {
 // Subscribe opens Redis Pub/Sub before the debounce window flushes.
 func (h *RedisHub) Subscribe(
 	sessionID, owner string,
-) (<-chan worker.Event, func(), error) {
+) (<-chan reply.Event, func(), error) {
 	if err := h.Ensure(sessionID, owner); err != nil {
 		return nil, nil, err
 	}
@@ -69,7 +69,7 @@ func (h *RedisHub) Subscribe(
 		_ = pubsub.Close()
 		return nil, nil, err
 	}
-	output := make(chan worker.Event, 128)
+	output := make(chan reply.Event, 128)
 	messages := pubsub.Channel()
 	var once sync.Once
 	cancel := func() {
@@ -87,7 +87,7 @@ func (h *RedisHub) Subscribe(
 				if !ok {
 					return
 				}
-				var event worker.Event
+				var event reply.Event
 				if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
 					continue
 				}
@@ -108,7 +108,7 @@ func (h *RedisHub) Subscribe(
 }
 
 // Publish emits one event to subscribers on any platform replica.
-func (h *RedisHub) Publish(sessionID, owner string, event worker.Event) error {
+func (h *RedisHub) Publish(sessionID, owner string, event reply.Event) error {
 	if err := h.Ensure(sessionID, owner); err != nil {
 		return err
 	}

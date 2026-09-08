@@ -11,11 +11,12 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	agenttrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
-	platformlog "github.com/liuzengh/trpc-agent-service/trpcservice/log"
-	platformmetrics "github.com/liuzengh/trpc-agent-service/trpcservice/metrics"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/worker"
+	platformlog "github.com/Violet2314/trpc-agent-service/trpcservice/log"
+	platformmetrics "github.com/Violet2314/trpc-agent-service/trpcservice/metrics"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/reply"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/worker"
 )
 
 const (
@@ -45,7 +46,7 @@ type ReplyDispatcher interface {
 		tenant.Snapshot,
 		string,
 		InboundMessage,
-		<-chan worker.Event,
+		<-chan reply.Event,
 	) error
 }
 
@@ -58,7 +59,7 @@ func (DrainReplyDispatcher) Dispatch(
 	_ tenant.Snapshot,
 	_ string,
 	_ InboundMessage,
-	events <-chan worker.Event,
+	events <-chan reply.Event,
 ) error {
 	for {
 		select {
@@ -330,7 +331,7 @@ func (r *Router) flush(
 		r.dispatchFailureReply(ctx, snapshot, sessionID, message, "executor_start")
 		return
 	}
-	replyEvents := make(chan worker.Event, 128)
+	replyEvents := make(chan reply.Event, 128)
 	replyCtx := oteltrace.ContextWithSpanContext(
 		r.lifecycleCtx,
 		oteltrace.SpanContextFromContext(ctx),
@@ -386,8 +387,8 @@ func (r *Router) dispatchFailureReply(
 	message InboundMessage,
 	errorType string,
 ) {
-	events := make(chan worker.Event, 1)
-	events <- worker.Event{Type: "error", Error: "agent execution failed: " + errorType}
+	events := make(chan reply.Event, 1)
+	events <- reply.Event{Type: "error", Error: "agent execution failed: " + errorType}
 	close(events)
 	replyCtx := oteltrace.ContextWithSpanContext(
 		r.lifecycleCtx,

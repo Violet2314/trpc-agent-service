@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/liuzengh/trpc-agent-service/trpcservice/storage"
-	"github.com/liuzengh/trpc-agent-service/trpcservice/tenant"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/storage"
+	"github.com/Violet2314/trpc-agent-service/trpcservice/tenant"
 )
 
 func TestAdminRequiresBasicAuth(t *testing.T) {
@@ -56,7 +55,7 @@ func TestTenantCRUDRoutes(t *testing.T) {
 }
 
 func TestAppBindingAndActivationRoutes(t *testing.T) {
-	store := newMemoryStore()
+	store := tenant.NewMemoryStore()
 	cache := &recordingCache{}
 	handler, err := NewHandler(store, cache, "admin", "test-password")
 	if err != nil {
@@ -100,7 +99,7 @@ func TestAppBindingAndActivationRoutes(t *testing.T) {
 // new app version must evict the cached data-plane snapshot so the next
 // request resolves the new version instead of the stale one.
 func TestActivateAppInvalidatesCachedSnapshots(t *testing.T) {
-	store := newMemoryStore()
+	store := tenant.NewMemoryStore()
 	cache, err := tenant.NewConfigCache(store, time.Minute)
 	if err != nil {
 		t.Fatalf("NewConfigCache() error = %v", err)
@@ -168,7 +167,7 @@ func TestMigrationRoutes(t *testing.T) {
 		ToBackend: "mysql", Phase: storage.PhasePrepared,
 	}}
 	handler, err := NewHandler(
-		newMemoryStore(), nil, "admin", "test-password", WithMigrator(migrator),
+		tenant.NewMemoryStore(), nil, "admin", "test-password", WithMigrator(migrator),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -201,9 +200,35 @@ func TestMigrationRoutes(t *testing.T) {
 	}
 }
 
+func TestStartMigrationConflictReturns409(t *testing.T) {
+	migrator := &fakeMigrator{startErr: fmt.Errorf(
+		"%w: migration source backend %q does not match the app's effective session backend %q",
+		storage.ErrMigrationConflict, "redis", "mysql",
+	)}
+	handler, err := NewHandler(
+		tenant.NewMemoryStore(), nil, "admin", "test-password", WithMigrator(migrator),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	response := serveJSON(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/apps/app-a/migrations",
+		map[string]string{"from": "redis", "to": "mysql"},
+	)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status = %d, want 409, body = %s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("effective session backend")) {
+		t.Fatalf("conflict body = %s", response.Body.String())
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(newMemoryStore(), nil, "admin", "test-password")
+	handler, err := NewHandler(tenant.NewMemoryStore(), nil, "admin", "test-password")
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
 	}
@@ -234,146 +259,6 @@ func authorizedRequest(t *testing.T, method, path string, body io.Reader) *http.
 	return request
 }
 
-type memoryStore struct {
-	mu       sync.Mutex
-	tenants  map[string]tenant.Tenant
-	apps     map[string][]tenant.AgentApp
-	bindings map[string]tenant.ChannelBinding
-}
-
-func newMemoryStore() *memoryStore {
-	return &memoryStore{
-		tenants:  make(map[string]tenant.Tenant),
-		apps:     make(map[string][]tenant.AgentApp),
-		bindings: make(map[string]tenant.ChannelBinding),
-	}
-}
-
-func (m *memoryStore) UpsertTenant(_ context.Context, value tenant.Tenant) error {
-	if err := value.Validate(); err != nil {
-		return errors.New("validate tenant: " + err.Error())
-	}
-	m.mu.Lock()
-	m.tenants[value.ID] = value
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *memoryStore) GetTenant(_ context.Context, id string) (tenant.Tenant, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	value, ok := m.tenants[id]
-	if !ok {
-		return tenant.Tenant{}, tenant.ErrNotFound
-	}
-	return value, nil
-}
-
-func (m *memoryStore) ListTenants(context.Context) ([]tenant.Tenant, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	result := make([]tenant.Tenant, 0, len(m.tenants))
-	for _, value := range m.tenants {
-		result = append(result, value)
-	}
-	return result, nil
-}
-
-func (m *memoryStore) DeactivateTenant(ctx context.Context, id string) error {
-	value, err := m.GetTenant(ctx, id)
-	if err != nil {
-		return err
-	}
-	value.IsActive = false
-	return m.UpsertTenant(ctx, value)
-}
-
-func (m *memoryStore) UpsertApp(_ context.Context, value tenant.AgentApp) (int, error) {
-	if err := value.Validate(); err != nil {
-		return 0, errors.New("validate app: " + err.Error())
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	value.Version = len(m.apps[value.ID]) + 1
-	value.IsCurrent = value.Version == 1
-	m.apps[value.ID] = append(m.apps[value.ID], value)
-	return value.Version, nil
-}
-
-func (m *memoryStore) GetCurrentApp(_ context.Context, id string) (tenant.AgentApp, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, value := range m.apps[id] {
-		if value.IsCurrent {
-			return value, nil
-		}
-	}
-	return tenant.AgentApp{}, tenant.ErrNotFound
-}
-
-func (m *memoryStore) ListApps(_ context.Context, tenantID string) ([]tenant.AgentApp, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []tenant.AgentApp
-	for _, versions := range m.apps {
-		for _, value := range versions {
-			if value.TenantID == tenantID && value.IsCurrent {
-				result = append(result, value)
-			}
-		}
-	}
-	return result, nil
-}
-
-func (m *memoryStore) BindAppVersion(_ context.Context, id string, version int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	values := m.apps[id]
-	found := false
-	for index := range values {
-		values[index].IsCurrent = values[index].Version == version
-		found = found || values[index].IsCurrent
-	}
-	if !found {
-		return tenant.ErrNotFound
-	}
-	m.apps[id] = values
-	return nil
-}
-
-func (m *memoryStore) UpsertBinding(_ context.Context, value tenant.ChannelBinding) error {
-	if err := value.Validate(); err != nil {
-		return errors.New("validate binding: " + err.Error())
-	}
-	m.mu.Lock()
-	m.bindings[value.ID] = value
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *memoryStore) GetBindingByRoute(_ context.Context, channel, routeKey string) (tenant.ChannelBinding, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, value := range m.bindings {
-		if value.Channel == channel && value.RouteKey == routeKey {
-			return value, nil
-		}
-	}
-	return tenant.ChannelBinding{}, tenant.ErrNotFound
-}
-
-func (m *memoryStore) ListBindings(_ context.Context, appID string) ([]tenant.ChannelBinding, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []tenant.ChannelBinding
-	for _, value := range m.bindings {
-		if value.AppID == appID {
-			result = append(result, value)
-		}
-	}
-	return result, nil
-}
-
 type recordingCache struct {
 	invalidations int
 }
@@ -381,10 +266,14 @@ type recordingCache struct {
 type fakeMigrator struct {
 	status     storage.MigrationStatus
 	startCalls int
+	startErr   error
 }
 
 func (f *fakeMigrator) Start(context.Context, string, string, string) (string, error) {
 	f.startCalls++
+	if f.startErr != nil {
+		return "", f.startErr
+	}
 	return f.status.ID, nil
 }
 func (f *fakeMigrator) Advance(context.Context, string) (storage.MigrationPhase, error) {
